@@ -1,0 +1,78 @@
+{
+  "region": "us-east-1",
+  "user_pool_id": "us-east-1_iOZDfjm9l",
+  "issuer": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_iOZDfjm9l",
+  "jwks_url": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_iOZDfjm9l/.well-known/jwks.json",
+  "domain": "https://agentledger-08419289.auth.us-east-1.amazoncognito.com",
+  "resource_server": "agentledger",
+  "cli": {
+    "client_id": "21fefaofnjhihnt0h6rehctjnf",
+    "callback": "http://localhost:8765/callback",
+    "scopes": [
+      "openid",
+      "email",
+      "profile"
+    ]
+  },
+  "console": {
+    "client_id": "3degeh0nmufkphgjm2mcq8q51q",
+    "callbacks": [
+      "http://localhost:5173/callback"
+    ]
+  },
+  "groups": [
+    "engineer",
+    "reviewer",
+    "security-admin"
+  ],
+  "agents": {
+    "agent_lead": {
+      "client_id": "19rua0fj75jmsep7bkepcepip4",
+      "scopes": [
+        "agentledger/tools",
+        "agentledger/llm",
+        "agentledger/messages"
+      ],
+      "secret_ref": "secretsmanager:agentledger/agents/agent_lead",
+      "token_mode": "get_client_token"
+    },
+    "agent_coder": {
+      "client_id": "7lg44op87l5993493far8nplvg",
+      "scopes": [
+        "agentledger/tools",
+        "agentledger/llm",
+        "agentledger/messages"
+      ],
+      "secret_ref": "secretsmanager:agentledger/agents/agent_coder",
+      "token_mode": "get_client_token"
+    },
+    "agent_tester": {
+      "client_id": "7lsue42djp41dhc7sf6rj7dk1l",
+      "scopes": [
+        "agentledger/tools",
+        "agentledger/llm"
+      ],
+      "secret_ref": "secretsmanager:agentledger/agents/agent_tester",
+      "token_mode": "get_client_token"
+    },
+    "agent_rogue": {
+      "client_id": "2mpm3gla9cg9u1gbff5g8hntqm",
+      "scopes": [
+        "agentledger/tools",
+        "agentledger/llm",
+        "agentledger/messages"
+      ],
+      "secret_ref": "secretsmanager:agentledger/agents/agent_rogue",
+      "token_mode": "get_client_token"
+    },
+    "agent_triage": {
+      "client_id": "3k737inr40se90cl2dfhg8dmod",
+      "scopes": [
+        "agentledger/tools",
+        "agentledger/llm"
+      ],
+      "secret_ref": "secretsmanager:agentledger/agents/agent_triage",
+      "token_mode": "get_client_token"
+    }
+  }
+}
