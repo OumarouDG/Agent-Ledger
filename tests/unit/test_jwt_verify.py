@@ -1,9 +1,14 @@
 """Offline tests for the gateway's JWT checks, using a locally generated RSA key."""
 
+import base64
+import hashlib
+import hmac
+import json
 import time
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from controlplane.auth.jwt_verify import AuthError, Verifier
@@ -58,3 +63,116 @@ def test_human_id_token():
     assert claims["cognito:groups"] == ["engineer"]
     with pytest.raises(AuthError):
         V.verify_human(token, "otherclient", key=PUB)
+
+
+# --- IdP-1 edge cases --------------------------------------------------------
+
+OTHER_POOL_ISS = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_OTHERPOOL"
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def handmade(header: dict, claims: dict, signature: bytes = b"") -> str:
+    """Build a JWT by hand so PyJWT's own encode-side guards don't stop us making a bad one."""
+    signing_input = f"{b64url(json.dumps(header).encode())}.{b64url(json.dumps(claims).encode())}"
+    return f"{signing_input}.{b64url(signature)}"
+
+
+def base_claims(**overrides) -> dict:
+    now = int(time.time())
+    claims = {"iss": ISS, "token_use": "access", "client_id": CODER, "sub": CODER,
+              "scope": "agentledger/tools", "iat": now, "exp": now + 3600}
+    claims.update(overrides)
+    return claims
+
+
+def test_other_pool_issuer_rejected_even_with_valid_signature():
+    # Signature checks out against our key; only the issuer is wrong. Proves iss is enforced.
+    with pytest.raises(AuthError) as e:
+        V.verify_agent(make(iss=OTHER_POOL_ISS), {CODER}, "agentledger/tools", key=PUB)
+    assert e.value.reason == "wrong_issuer"
+
+
+def test_other_pool_token_with_other_key_rejected():
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    token = jwt.encode(base_claims(iss=OTHER_POOL_ISS), other, algorithm="RS256")
+    with pytest.raises(AuthError) as e:
+        V.verify_agent(token, {CODER}, "agentledger/tools", key=PUB)
+    assert e.value.reason == "invalid_token"
+
+
+def test_human_token_wrong_issuer_rejected():
+    token = make(iss=OTHER_POOL_ISS, token_use="id", aud="cliclient")
+    with pytest.raises(AuthError) as e:
+        V.verify_human(token, "cliclient", key=PUB)
+    assert e.value.reason == "wrong_issuer"
+
+
+@pytest.mark.parametrize("claim", ["exp", "iat", "iss", "token_use"])
+def test_missing_required_claim_rejected(claim):
+    with pytest.raises(AuthError) as e:
+        V.verify_agent(make(**{claim: None}), {CODER}, "agentledger/tools", key=PUB)
+    assert e.value.reason == "invalid_token"
+
+
+def test_missing_exp_rejected_for_human_token():
+    token = make(exp=None, token_use="id", aud="cliclient")
+    with pytest.raises(AuthError) as e:
+        V.verify_human(token, "cliclient", key=PUB)
+    assert e.value.reason == "invalid_token"
+
+
+@pytest.mark.parametrize("alg", ["none", "None", "NONE"])
+def test_alg_none_rejected(alg):
+    token = handmade({"alg": alg, "typ": "JWT"}, base_claims())
+    with pytest.raises(AuthError) as e:
+        V.verify_agent(token, {CODER}, "agentledger/tools", key=PUB)
+    assert e.value.reason == "invalid_token"
+
+
+def test_alg_none_rejected_for_human_token():
+    token = handmade({"alg": "none", "typ": "JWT"}, base_claims(token_use="id", aud="cliclient"))
+    with pytest.raises(AuthError) as e:
+        V.verify_human(token, "cliclient", key=PUB)
+    assert e.value.reason == "invalid_token"
+
+
+def _hs256_with_public_key(claims: dict) -> str:
+    """Classic key-confusion forgery: HMAC-sign with the RSA public key's PEM bytes."""
+    pem = PUB.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    header = {"alg": "HS256", "typ": "JWT"}
+    signing_input = f"{b64url(json.dumps(header).encode())}.{b64url(json.dumps(claims).encode())}"
+    sig = hmac.new(pem, signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{b64url(sig)}"
+
+
+def test_hs256_signed_with_public_key_rejected_agent():
+    token = _hs256_with_public_key(base_claims())
+    with pytest.raises(AuthError) as e:
+        V.verify_agent(token, {CODER}, "agentledger/tools", key=PUB)
+    assert e.value.reason == "invalid_token"
+
+
+def test_hs256_signed_with_public_key_rejected_human():
+    token = _hs256_with_public_key(base_claims(token_use="id", aud="cliclient"))
+    with pytest.raises(AuthError) as e:
+        V.verify_human(token, "cliclient", key=PUB)
+    assert e.value.reason == "invalid_token"
+
+
+def test_hs256_forgery_rejected_when_key_is_pem_bytes():
+    # Even if a caller hands the verifier PEM bytes instead of a key object, HS256 must not be accepted.
+    pem = PUB.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    token = _hs256_with_public_key(base_claims())
+    with pytest.raises(AuthError) as e:
+        V.verify_agent(token, {CODER}, "agentledger/tools", key=pem)
+    assert e.value.reason == "invalid_token"
+
+
+@pytest.mark.parametrize("token", ["", "not-a-jwt", "a.b", "a.b.c", "....", "eyJhbGciOiJSUzI1NiJ9.e30."])
+def test_malformed_token_rejected(token):
+    with pytest.raises(AuthError) as e:
+        V.verify_agent(token, {CODER}, "agentledger/tools", key=PUB)
+    assert e.value.reason == "invalid_token"
