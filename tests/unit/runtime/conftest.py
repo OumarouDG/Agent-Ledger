@@ -6,6 +6,7 @@ mock issue #42; the Sentinel is off and its lock file and the audit file live in
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import socket
 import threading
@@ -25,7 +26,8 @@ from gateway.grants import Grant
 ISS = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_FAKE"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 WF = "wf_test01"
-CLIENT_IDS = {"fakeleadclient": "agent_lead", "fakecoderclient": "agent_coder"}
+CLIENT_IDS = {"fakeleadclient": "agent_lead", "fakecoderclient": "agent_coder",
+              "faketesterclient": "agent_tester"}
 AGENT_CLIENT = {agent: cid for cid, agent in CLIENT_IDS.items()}
 
 
@@ -76,10 +78,9 @@ def lead_grant(grant_id: str, **kw) -> Grant:
     return Grant(**base)
 
 
-@pytest.fixture(scope="module")
-def gateway(tmp_path_factory):
-    d = tmp_path_factory.mktemp("rt-gw")
-    store = MutableStore(lead_grant("g_lead"), lead_grant("g_revoke_me"))
+@contextlib.contextmanager
+def serve_gateway(store, d):
+    """Run a gateway over `store` on a free loopback port; yields its /mcp URL."""
     app = gw.create_server(
         verifier=FakeJwksVerifier(), client_ids=CLIENT_IDS, grants=store,
         audit_path=d / "audit.jsonl",
@@ -92,9 +93,18 @@ def gateway(tmp_path_factory):
         time.sleep(0.05)
     assert server.started, "test gateway did not start"
     port = server.servers[0].sockets[0].getsockname()[1]
-    yield {"url": f"http://127.0.0.1:{port}/mcp", "store": store}
-    server.should_exit = True
-    t.join(timeout=10)
+    try:
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        server.should_exit = True
+        t.join(timeout=10)
+
+
+@pytest.fixture(scope="module")
+def gateway(tmp_path_factory):
+    store = MutableStore(lead_grant("g_lead"), lead_grant("g_revoke_me"))
+    with serve_gateway(store, tmp_path_factory.mktemp("rt-gw")) as url:
+        yield {"url": url, "store": store}
 
 
 @pytest.fixture
