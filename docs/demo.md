@@ -52,9 +52,21 @@ In the SSM shell:
 
 Useful options: `--denied` shows only refusals, `--last 5` the latest five.
 
+### Optional: Sentinel lock (after step 8)
+
+Do this last: it locks the grant, so the other steps stop working until you release it. Restore the grant first if you revoked it in step 7.
+
+1. In Kiro, ask for something the grant does not allow, three times in a row: `Call llm_converse with model anthropic.claude-opus-5 and a user message "hi"`. Each is denied with `model_not_permitted`.
+2. Ask for something the grant does allow: `Call get_issue with issue_number 1`. Expect `denied: grant_quarantined`. The third refusal locked the grant.
+3. Show the timeline: `.venv/bin/python scripts/audit_timeline.py --last 6`. It shows a `LOCK` line.
+4. Release it in the SSM shell: `rm -f gateway-quarantine.json`. No restart needed.
+
+Point to make: the agent kept pushing against its limits, and the gateway cut it off by itself. Two refusals in a row are fine; an allowed call in between starts the count again.
+
 ## After the demo
 
 - Revert the grant to `active` (above).
+- Release any Sentinel lock: `rm -f gateway-quarantine.json` in the SSM shell.
 - Delete the demo branch: `gh api -X DELETE repos/OumarouDG/agentledger-demo/git/refs/heads/agentledger/wf_001/demo`.
 
 ## If something goes wrong

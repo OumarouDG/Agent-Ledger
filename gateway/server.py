@@ -13,7 +13,7 @@ from fastmcp.server.dependencies import get_access_token, get_http_headers
 
 from controlplane.auth.jwt_verify import Verifier, agent_client_ids
 
-from . import audit, github, llm
+from . import audit, github, llm, sentinel as sentinel_mod
 from .auth import AUTH_MODE, AgentTokenVerifier
 from .authorization import Decision, authorize
 from .grants import GrantStore
@@ -32,7 +32,8 @@ def create_server(verifier: Verifier | None = None,
                   grants: GrantStore | None = None,
                   audit_path: Path | None = None,
                   github_app: github.GitHubApp | None = None,
-                  llm_client: llm.BedrockLLM | None = None) -> FastMCP:
+                  llm_client: llm.BedrockLLM | None = None,
+                  sentinel: sentinel_mod.Sentinel | None = None) -> FastMCP:
     """Build the gateway. Pass `verifier`/`client_ids` in tests; defaults load shared/cognito.json."""
     try:
         verifier = verifier or Verifier.from_config()
@@ -49,8 +50,28 @@ def create_server(verifier: Verifier | None = None,
         raise GatewayConfigError(str(e)) from e
     audit_path = audit_path or audit.default_path()
     llm_client = llm_client or llm.BedrockLLM()
+    try:
+        sentinel = sentinel or sentinel_mod.Sentinel(sentinel_mod.default_lock_path(),
+                                                     sentinel_mod.threshold_from_env(os.environ))
+    except ValueError as e:
+        raise GatewayConfigError(str(e)) from e
     github_app = github_app or github.from_env(os.environ)  # None = mock issues (dev only)
 
+    def _sentinel_update(decision, agent_id, grant_id, workflow_id, tool) -> None:
+        """Count violations by the grant's own agent; lock the grant when the streak is long."""
+        if decision.allowed:
+            sentinel.allowed(grant_id)
+            return
+        g = decision.grant
+        if g is None or g.agent_id != agent_id:
+            return  # a stranger's denial never counts against someone else's grant
+        if sentinel.violation(grant_id, decision.reason):
+            try:
+                audit.record(audit_path, event="sentinel", agent_id=agent_id, grant_id=grant_id,
+                             workflow_id=workflow_id, human_id=g.human_id, tool=tool,
+                             resource={}, decision="lock", reason="repeated_violations")
+            except audit.AuditError:
+                pass  # the lock is already in place; the denial itself was audited above
     def guard(tool: str, resource: dict | None = None, repo_required: bool = False,
               branch: str | None = None, model: str | None = None):
         """Run the authorization pipeline for a protected tool. Raises ToolError on denial.
@@ -63,6 +84,8 @@ def create_server(verifier: Verifier | None = None,
         workflow_id = headers.get("x-workflow-id")
         decision = authorize(grants, agent_id=agent_id, grant_id=grant_id,
                              workflow_id=workflow_id, tool=tool)
+        if decision.allowed and sentinel.is_locked(grant_id):
+            decision = Decision(False, "grant_quarantined", decision.grant)
         resource = dict(resource or {})
         if decision.allowed and repo_required:
             repo = decision.grant.resources.get("repository")
@@ -92,6 +115,7 @@ def create_server(verifier: Verifier | None = None,
             )
         except audit.AuditError:  # fail closed: no record, no action
             raise ToolError("denied: audit_unavailable") from None
+        _sentinel_update(decision, agent_id, grant_id, workflow_id, tool)
         if not decision.allowed:
             raise ToolError(f"denied: {decision.reason}")
         return decision.grant
@@ -154,10 +178,20 @@ def create_server(verifier: Verifier | None = None,
         chosen = model or (listed[0] if listed else "")
         grant = guard("llm_converse", {}, model=chosen)
         try:
-            return llm_client.converse(
+            result = llm_client.converse(
                 chosen, messages, system, llm.effective_max_tokens(grant.resources.get("max_tokens")))
         except llm.LLMError as e:
             raise ToolError(str(e)) from e
+        try:  # after the call; the pre-call record already allowed it
+            audit.record(audit_path, event="usage", agent_id=agent_id,
+                         grant_id=headers.get("x-grant-id"), workflow_id=headers.get("x-workflow-id"),
+                         human_id=grant.human_id, tool="llm_converse", decision="usage",
+                         reason="completed", resource={"model": chosen,
+                         "input_tokens": result.get("input_tokens"),
+                         "output_tokens": result.get("output_tokens")})
+        except audit.AuditError:
+            pass  # cannot undo a finished call; the failure is logged by the audit module
+        return result
     @mcp.tool
     def agentledger_ping() -> dict:
         """Check that Kiro can reach the AgentLedger gateway."""

@@ -83,7 +83,11 @@ Both need `resources.repository` and `resources.branch_prefix` in the grant. The
 
 - `llm_converse(messages, model=None, system=None)`: Bedrock Converse using the gateway's own AWS role. `messages` is a list of `{role: user|assistant, content: text}` that alternates, starts and ends with a user message (max 20 messages, 8000 characters each; `system` max 4000).
 
-The grant controls it: `tools` must include `llm_converse`, `resources.models` lists the model ids the agent may use (the first is the default; anything else is denied with `model_not_permitted` before Bedrock is called) and `resources.max_tokens` caps the reply (default 1024, never above 2000). The result has `text`, `stop_reason` and token counts. The model id is written to the audit trail; token counts are not yet. Use ids the account allows, for example `us.amazon.nova-lite-v1:0`.
+The grant controls it: `tools` must include `llm_converse`, `resources.models` lists the model ids the agent may use (the first is the default; anything else is denied with `model_not_permitted` before Bedrock is called) and `resources.max_tokens` caps the reply (default 1024, never above 2000). The result has `text`, `stop_reason` and token counts. The model id is audited with the decision, and a second `usage` audit line with the token counts is written after the call (if that write fails the call has already finished and the failure is only logged). Use ids the account allows, for example `us.amazon.nova-lite-v1:0`.
+
+## Sentinel
+
+After `AGENTLEDGER_SENTINEL_THRESHOLD` denials in a row (default 3, `0` turns it off) the gateway locks the grant: every later call with it is denied with `grant_quarantined` and an audit line with decision `lock` is written. Only policy violations by the grant's own agent count (`tool_not_permitted`, `branch_not_permitted`, `model_not_permitted`, `resource_not_in_grant`). A stranger using someone else's grant, an unknown grant or a revoked grant never counts, so nobody can lock another agent's grant by guessing its id. Any allowed call resets the streak. The count is in memory; the lock is saved in `AGENTLEDGER_SENTINEL_FILE` (default `gateway-quarantine.json`) and survives a restart. To release a grant, remove its entry from that file, or delete the file; no restart is needed. An unreadable lock file locks every grant. The lock is gateway-local; it should move into the grant store's `quarantined` status once that store can be written.
 
 ## Audit
 
