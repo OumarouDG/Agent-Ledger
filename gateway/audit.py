@@ -1,7 +1,7 @@
 """Local audit trail for gateway decisions (JSON lines).
 
 Placeholder until the Ledger schema is agreed; keep fields minimal and never log tokens.
-Denials are recorded too. If an event cannot be written, ecord raises AuditError\nand the gateway denies the call: no action is allowed without a record.
+Denials are recorded too. If an event cannot be written, record raises AuditError and the gateway denies the call: no action is allowed without a record.
 """
 
 from __future__ import annotations

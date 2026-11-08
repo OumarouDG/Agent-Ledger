@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteAuditLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"],
+      "Resource": "arn:aws:logs:us-east-1:330608419289:log-group:/agentledger/gateway-audit:*"
+    },
+    {
+      "Sid": "CreateGroup",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:PutRetentionPolicy"],
+      "Resource": "arn:aws:logs:us-east-1:330608419289:log-group:/agentledger/gateway-audit"
+    }
+  ]
+}

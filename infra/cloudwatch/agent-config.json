@@ -1,0 +1,18 @@
+{
+  "agent": { "run_as_user": "root" },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/home/ssm-user/Agent-Ledger/gateway-audit.jsonl",
+            "log_group_name": "/agentledger/gateway-audit",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 7,
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  }
+}
