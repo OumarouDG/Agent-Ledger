@@ -146,8 +146,20 @@ def _make_password() -> str:
 
 
 @pytest.fixture(scope="module")
-def human_id_token(cfg) -> tuple[str, str]:
-    """(id_token, client_id) for a throwaway user; user and client are deleted afterwards."""
+def human_id_token(human_auth) -> tuple[str, str]:
+    auth, client_id = human_auth
+    return auth["IdToken"], client_id
+
+
+@pytest.fixture(scope="module")
+def human_access_token(human_auth) -> tuple[str, str]:
+    auth, client_id = human_auth
+    return auth["AccessToken"], client_id
+
+
+@pytest.fixture(scope="module")
+def human_auth(cfg) -> tuple[dict, str]:
+    """(AuthenticationResult, client_id) for a throwaway user; user and client are deleted afterwards."""
     cg = boto3.client("cognito-idp", region_name=cfg["region"])
     pool = cfg["user_pool_id"]
     suffix = secrets.token_hex(4)
@@ -168,7 +180,7 @@ def human_id_token(cfg) -> tuple[str, str]:
             AuthParameters={"USERNAME": username, "PASSWORD": password},
         )["AuthenticationResult"]
         del password
-        yield auth["IdToken"], client_id
+        yield auth, client_id
     finally:
         leftovers = []
         if user_created:
@@ -199,3 +211,29 @@ def test_human_id_token_rejected_by_verify_agent(cfg, verifier, human_id_token):
     with pytest.raises(AuthError) as e:
         verifier.verify_agent(id_token, all_clients)
     assert e.value.reason == "wrong_token_use"
+
+
+# --- IdP-5 candidate 4: a human ACCESS token must not pass as an agent --------
+
+def test_human_access_token_has_username_claim(verifier, human_access_token):
+    # The not_an_agent_token guard relies on Cognito putting `username` in human access tokens.
+    import jwt
+    token, _ = human_access_token
+    claims = jwt.decode(token, options={"verify_signature": False})
+    assert claims["token_use"] == "access"
+    assert claims["username"].startswith("livetest-")
+
+
+def test_human_access_token_rejected_when_its_client_is_allowed(verifier, human_access_token):
+    # Worst case: the human's app client is (wrongly) in the allowed set. The username guard must still refuse.
+    token, client_id = human_access_token
+    with pytest.raises(AuthError) as e:
+        verifier.verify_agent(token, set(agent_client_ids()) | {client_id})
+    assert e.value.reason == "not_an_agent_token"
+
+
+def test_human_access_token_rejected_with_agent_clients_only(verifier, human_access_token):
+    token, _ = human_access_token
+    with pytest.raises(AuthError) as e:
+        verifier.verify_agent(token, set(agent_client_ids()))
+    assert e.value.reason == "unknown_client"

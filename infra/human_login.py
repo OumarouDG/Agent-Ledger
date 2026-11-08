@@ -12,6 +12,7 @@ import hashlib
 import secrets
 import sys
 import threading
+import time
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -25,6 +26,8 @@ from controlplane.auth.config import load_config  # noqa: E402
 from controlplane.auth.jwt_verify import Verifier  # noqa: E402
 
 result: dict = {}
+TIMEOUT_S = 120
+POLL_S = 0.2
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -41,6 +44,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    try:
+        return _login()
+    except KeyboardInterrupt:
+        print("\nLogin cancelled")
+        return 1
+
+
+def _login() -> int:
+    result.clear()
     cfg = load_config()
     cli = cfg["cli"]
     callback = urllib.parse.urlparse(cli["callback"])
@@ -50,7 +62,22 @@ def main() -> int:
     state = secrets.token_urlsafe(16)
 
     server = HTTPServer((callback.hostname, callback.port), Handler)
-    threading.Thread(target=server.handle_request, daemon=True).start()
+    server.timeout = TIMEOUT_S  # handle_request() returns after this even if nothing arrives
+    try:
+        return _run(cfg, cli, server, verifier_str, challenge, state)
+    finally:
+        server.server_close()
+
+
+def _serve_once(server) -> None:
+    try:
+        server.handle_request()
+    except (OSError, ValueError):
+        pass  # main thread closed the socket (cancel or timeout); nothing to report
+
+
+def _run(cfg: dict, cli: dict, server, verifier_str: str, challenge: str, state: str) -> int:
+    threading.Thread(target=lambda: _serve_once(server), daemon=True).start()
 
     url = f"{cfg['domain']}/oauth2/authorize?" + urllib.parse.urlencode({
         "response_type": "code",
@@ -65,9 +92,13 @@ def main() -> int:
     webbrowser.open(url)
     print(f"If it didn't open, visit:\n{url}\n")
 
+    deadline = time.monotonic() + TIMEOUT_S
     while "code" not in result and "error" not in result:
-        threading.Event().wait(0.2)
-    server.server_close()
+        if time.monotonic() >= deadline:
+            print(f"Login timed out after {TIMEOUT_S} s: no sign-in reached {cli['callback']}. "
+                  f"Run python infra/human_login.py again and finish signing in within {TIMEOUT_S} s.")
+            return 1
+        threading.Event().wait(POLL_S)
 
     if "error" in result:
         print(f"Login failed: {result['error']}")

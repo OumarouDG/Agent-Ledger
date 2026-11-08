@@ -17,7 +17,7 @@ ISS = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_TEST"
 CODER = "coderclient123"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 PUB = KEY.public_key()
-V = Verifier(issuer=ISS, jwks_url="unused")
+V = Verifier(issuer=ISS, jwks_url="https://example.test/unused/jwks.json")  # key= is always passed
 
 
 def make(**overrides) -> str:
@@ -176,3 +176,29 @@ def test_malformed_token_rejected(token):
     with pytest.raises(AuthError) as e:
         V.verify_agent(token, {CODER}, "agentledger/tools", key=PUB)
     assert e.value.reason == "invalid_token"
+
+
+# --- IdP-5: a verifier with no issuer must not exist ----------------------------
+
+@pytest.mark.parametrize("issuer", [None, "", "   ", "http://cognito-idp.us-east-1.amazonaws.com/us-east-1_X"])
+def test_verifier_refuses_missing_or_bad_issuer(issuer):
+    # Bad case: Verifier(issuer=None) passed issuer=None to PyJWT, which then skipped the
+    # issuer check and accepted a token from any user pool.
+    with pytest.raises(ValueError) as e:
+        Verifier(issuer=issuer, jwks_url="https://example.test/jwks.json")
+    assert "issuer" in str(e.value)
+
+
+@pytest.mark.parametrize("jwks_url", [None, "", "http://example.test/jwks.json"])
+def test_verifier_refuses_missing_or_bad_jwks_url(jwks_url):
+    with pytest.raises(ValueError) as e:
+        Verifier(issuer=ISS, jwks_url=jwks_url)
+    assert "jwks_url" in str(e.value)
+
+
+def test_verifier_with_issuer_rejects_other_pool():
+    # Control: with the issuer set, the same other-pool token is refused.
+    v = Verifier(issuer=ISS, jwks_url="https://example.test/jwks.json")
+    with pytest.raises(AuthError) as e:
+        v.verify_agent(make(iss=OTHER_POOL_ISS), {CODER}, key=PUB)
+    assert e.value.reason == "wrong_issuer"

@@ -134,3 +134,35 @@ def test_find_secrets_passes_a_clean_config():
 def test_find_secrets_catches_fakes(bad, expect):
     hits = find_secrets(bad)
     assert any(expect in h for h in hits), hits
+
+
+# --- IdP-5 (a): config path is resolved on every call, not frozen by the cache --
+
+def test_changed_env_after_first_load_is_used(tmp_path, monkeypatch):
+    # Bad case: load_config() cached the first file and ignored a changed AGENTLEDGER_COGNITO_CONFIG.
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps({"name": "a"}))
+    b.write_text(json.dumps({"name": "b"}))
+    monkeypatch.setenv("AGENTLEDGER_COGNITO_CONFIG", str(a))
+    assert load_config()["name"] == "a"
+    monkeypatch.setenv("AGENTLEDGER_COGNITO_CONFIG", str(b))
+    assert load_config()["name"] == "b"
+
+
+def test_same_path_is_still_cached(tmp_path, monkeypatch):
+    # Control: the gateway calls load_config() per request, so one path is read once.
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"name": "first"}))
+    monkeypatch.setenv("AGENTLEDGER_COGNITO_CONFIG", str(p))
+    assert load_config()["name"] == "first"
+    p.write_text(json.dumps({"name": "second"}))
+    assert load_config()["name"] == "first"
+
+
+def test_empty_env_var_falls_back_to_default(tmp_path, monkeypatch):
+    # Bad case: AGENTLEDGER_COGNITO_CONFIG="" became Path("") == ".", which exists, then failed reading a folder.
+    default = tmp_path / "cognito.json"
+    default.write_text(json.dumps({"name": "default"}))
+    monkeypatch.setattr(config, "DEFAULT_PATH", default)
+    monkeypatch.setenv("AGENTLEDGER_COGNITO_CONFIG", "")
+    assert load_config()["name"] == "default"

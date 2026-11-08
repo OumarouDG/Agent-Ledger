@@ -242,3 +242,99 @@ def test_agent_token_repr_never_contains_token():
     for rendered in (repr(tok), str(tok), f"{tok}", repr([tok]), repr({"t": tok})):
         assert FAKE_TOKEN not in rendered
         assert "agent_coder" in rendered
+
+
+# --- IdP-5 candidate 1: no silent fallback to /oauth2/token -------------------
+
+class CognitoWithoutGetClientToken:
+    """Stands in for a cognito-idp client from a boto3 too old to have get_client_token."""
+
+
+def test_get_client_token_mode_with_old_boto3_refuses(tmp_path, monkeypatch, aws, no_http):
+    # Bad case: token_mode said get_client_token, boto3 lacked the method, and minting quietly
+    # switched to /oauth2/token.
+    stubbers, _ = aws
+    write_config(tmp_path, monkeypatch, agent_entry("secretsmanager:agentledger/agent_coder"))
+    stub_secret(stubbers, "agentledger/agent_coder")
+    real = agent_tokens.boto3.client
+    monkeypatch.setattr(agent_tokens.boto3, "client",
+                        lambda svc, **kw: CognitoWithoutGetClientToken() if svc == "cognito-idp" else real(svc, **kw))
+
+    with pytest.raises(RuntimeError) as e:
+        mint_agent_token("agent_coder")
+    assert "get_client_token" in str(e.value) and "pip install" in str(e.value)
+    assert no_http == []
+
+
+@pytest.mark.parametrize("token_mode", ["get-client-token", "GetClientToken", "", None])
+def test_unknown_token_mode_refuses(tmp_path, monkeypatch, aws, no_http, token_mode):
+    # Bad case: any token_mode other than "get_client_token" (a typo, null) quietly used /oauth2/token.
+    stubbers, _ = aws
+    write_config(tmp_path, monkeypatch, agent_entry("secretsmanager:agentledger/agent_coder", token_mode=token_mode))
+    stub_secret(stubbers, "agentledger/agent_coder")
+    with pytest.raises(ValueError) as e:
+        mint_agent_token("agent_coder")
+    assert "token_mode" in str(e.value) and "agent_coder" in str(e.value)
+    assert no_http == []
+
+
+def test_missing_token_mode_refuses(tmp_path, monkeypatch, aws, no_http):
+    stubbers, _ = aws
+    entry = agent_entry("secretsmanager:agentledger/agent_coder")
+    del entry["token_mode"]
+    write_config(tmp_path, monkeypatch, entry)
+    stub_secret(stubbers, "agentledger/agent_coder")
+    with pytest.raises(ValueError):
+        mint_agent_token("agent_coder")
+    assert no_http == []
+
+
+# --- IdP-5 candidate 5: expired or missing AWS credentials say what to do ----
+
+@pytest.mark.parametrize("code", ["ExpiredTokenException", "ExpiredToken", "UnrecognizedClientException",
+                                  "InvalidClientTokenId", "InvalidSignatureException"])
+def test_expired_credentials_on_secret_read_name_the_fix(tmp_path, monkeypatch, aws, no_http, code):
+    # Bad case: a raw botocore ClientError reached the caller with no hint to refresh credentials.
+    stubbers, _ = aws
+    write_config(tmp_path, monkeypatch, agent_entry("secretsmanager:agentledger/agent_coder"))
+    stubbers["secretsmanager"].add_client_error("get_secret_value", code, "The security token is expired")
+    with pytest.raises(agent_tokens.AwsCredentialsError) as e:
+        mint_agent_token("agent_coder")
+    assert "Workshop Studio credentials" in str(e.value)
+    assert code in str(e.value)
+
+
+def test_expired_credentials_on_get_client_token_name_the_fix(tmp_path, monkeypatch, aws, no_http):
+    stubbers, _ = aws
+    write_config(tmp_path, monkeypatch, agent_entry("secretsmanager:agentledger/agent_coder"))
+    stub_secret(stubbers, "agentledger/agent_coder")
+    stubbers["cognito-idp"].add_client_error("get_client_token", "ExpiredTokenException", "expired")
+    with pytest.raises(agent_tokens.AwsCredentialsError) as e:
+        mint_agent_token("agent_coder")
+    assert "Workshop Studio credentials" in str(e.value)
+
+
+class SecretsManagerWithNoCredentials:
+    def get_secret_value(self, **_):
+        from botocore.exceptions import NoCredentialsError
+        raise NoCredentialsError()
+
+
+def test_missing_credentials_name_the_fix(tmp_path, monkeypatch, no_http):
+    write_config(tmp_path, monkeypatch, agent_entry("secretsmanager:agentledger/agent_coder"))
+    monkeypatch.setattr(agent_tokens.boto3, "client", lambda svc, **kw: SecretsManagerWithNoCredentials())
+    with pytest.raises(agent_tokens.AwsCredentialsError) as e:
+        mint_agent_token("agent_coder")
+    assert "Workshop Studio credentials" in str(e.value)
+
+
+def test_non_credential_cognito_error_is_not_relabelled(tmp_path, monkeypatch, aws, no_http):
+    # Control: a wrong client secret is not a credentials problem and must not be reported as one.
+    stubbers, _ = aws
+    write_config(tmp_path, monkeypatch, agent_entry("secretsmanager:agentledger/agent_coder"))
+    stub_secret(stubbers, "agentledger/agent_coder")
+    stubbers["cognito-idp"].add_client_error("get_client_token", "NotAuthorizedException", "bad secret")
+    with pytest.raises(Exception) as e:
+        mint_agent_token("agent_coder")
+    assert e.type.__name__ != "AwsCredentialsError"
+    assert "NotAuthorizedException" in str(e.value)

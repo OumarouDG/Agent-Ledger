@@ -233,7 +233,7 @@ def ensure_agent_client(pool_id: str, agent_id: str, scopes: list[str]) -> tuple
             break
         except ClientError as e:
             if flows and code(e) == "InvalidParameterException":
-                log(f"{agent_id}: ALLOW_CLIENT_TOKEN_AUTH rejected ({e.response['Error']['Message']}); "
+                log(f"WARNING {agent_id}: ALLOW_CLIENT_TOKEN_AUTH rejected ({e.response['Error']['Message']}); "
                     "falling back to the /oauth2/token client_credentials flow")
                 token_mode = "oauth2_token"
                 continue
@@ -257,9 +257,28 @@ def store_secret(agent_id: str, client_id: str, client_secret: str, local: dict)
     except ClientError as e:
         if code(e) not in ("AccessDeniedException", "UnrecognizedClientException"):
             raise
-        log(f"Secrets Manager not available ({code(e)}); storing {agent_id} secret in {LOCAL_SECRETS_FILE.name}")
+        log(f"WARNING Secrets Manager not available ({code(e)}); storing {agent_id} secret in {LOCAL_SECRETS_FILE.name}")
         local[agent_id] = {"client_id": client_id, "client_secret": client_secret}
         return f"local:{agent_id}"
+
+
+def report_fallbacks(agents_out: dict) -> list[str]:
+    """Print a WARNING block at the end of the run for every agent not on the expected path."""
+    lines = []
+    for agent_id, a in agents_out.items():
+        if a["token_mode"] != "get_client_token":
+            lines.append(f"{agent_id}: token_mode is {a['token_mode']} (GetClientToken flow was rejected); "
+                         "tokens come from the /oauth2/token endpoint")
+        if not a["secret_ref"].startswith("secretsmanager:"):
+            lines.append(f"{agent_id}: client secret stored in {LOCAL_SECRETS_FILE.name}, not Secrets Manager; "
+                         "only this machine can mint its tokens")
+    if lines:
+        print("\n" + "=" * 72)
+        print(f"WARNING: {len(lines)} fallback(s) in effect. Record these in the PR text.")
+        for line in lines:
+            print(f"WARNING: {line}")
+        print("=" * 72)
+    return lines
 
 
 def main() -> None:
@@ -269,8 +288,8 @@ def main() -> None:
         sys.exit(f"Can't reach AWS ({e}). Paste the Workshop Studio credentials into this shell first.")
 
     if not hasattr(cognito, "get_client_token"):
-        print("Note: this boto3 has no get_client_token. Run `pip install -U boto3` for the newest API; "
-              "token minting will fall back to /oauth2/token until then.")
+        print("WARNING: this boto3 has no get_client_token. Run `pip install -r requirements.txt`; "
+              "mint_agent_token refuses get_client_token agents until then.")
 
     print(f"Setting up AgentLedger IdP in {REGION} (account ...{account_id[-4:]})")
     pool_id = ensure_pool()
@@ -310,6 +329,7 @@ def main() -> None:
     }
     SHARED_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     SHARED_CONFIG.write_text(json.dumps(config, indent=2) + "\n")
+    report_fallbacks(agents_out)
     print(f"\nDone. Wrote {SHARED_CONFIG.relative_to(ROOT)} (commit this) "
           f"and {USERS_FILE.relative_to(ROOT)} (never commit).")
     print("Next: python infra/smoke_test.py, then python infra/human_login.py")
