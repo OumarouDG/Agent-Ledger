@@ -1,8 +1,9 @@
 # Ledger: provenance and lineage
 
-Status: feature branch `feature/ledger-lineage-sprint`. Not merged. Not deployed. The gateway,
-the audit writer, EC2, DynamoDB and CloudWatch are untouched. Everything here reads the audit
-file and writes nothing to it.
+Status: merged to `main` as new files only. Not deployed to EC2 and not needed there. The
+gateway, the audit writer, DynamoDB and CloudWatch are untouched. Everything here reads the
+audit file and writes nothing to it. It has not yet been run against the real audit file, and
+the baseline demo was not re-run with it. Treat the output as unproven until it is.
 
 Safe baseline: tag `demo-safe-2026-11-08` (`ed657a9`).
 
