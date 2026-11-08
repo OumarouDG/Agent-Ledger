@@ -5,10 +5,12 @@ One story: an agent gets exactly the authority a human delegated, and everything
 ## Before the demo (10 minutes)
 
 1. **EC2 is current.** In an SSM shell on `i-02d94a2f0bf2a72db`, from `/home/ssm-user/Agent-Ledger`: `git pull --ff-only origin main`, then `sudo systemctl restart agentledger-gateway`, then `sudo systemctl status agentledger-gateway --no-pager` shows `active (running)`.
-2. **Grant is active** on EC2. `gateway-grants.json` must hold `grant_001` with `"status": "active"`, tools `get_issue`, `create_branch`, `commit_file`, `resources.repository` `OumarouDG/agentledger-demo` and `resources.branch_prefix` `agentledger/wf_001/`.
+2. **Make a fresh grant** (grants live in DynamoDB and last at most 4 hours). Sign in with `agentledger login`, then:
+   `agentledger grant create --agent agent_coder --workflow wf_001 --tools get_issue,create_branch,commit_file,llm_converse --repo OumarouDG/agentledger-demo --branch-prefix agentledger/wf_001/ --model us.amazon.nova-lite-v1:0 --ttl 3h`
+   Note the grant id it prints (`gr_...`). Add `get_test_result,open_pull_request,get_pull_request` to `--tools` for the extended demo.
 3. **Demo repo is clean.** `gh api repos/OumarouDG/agentledger-demo/branches --jq '.[].name'` prints only `main`. Delete leftovers with `gh api -X DELETE repos/OumarouDG/agentledger-demo/git/refs/heads/<branch>`.
 4. **Start from a clean audit file** (optional): in the SSM shell, `mv gateway-audit.jsonl gateway-audit.old.jsonl`. The gateway creates a new one on the first call.
-5. **Close every Kiro IDE window**, then run `.\scripts\launch-kiro.ps1`. It starts the tunnel, mints the `agent_coder` token and starts Kiro with the token, grant and workflow.
+5. **Close every Kiro IDE window**, then run `.\scripts\launch-kiro.ps1 -GrantId <the id from step 2>`. It starts the tunnel, mints the `agent_coder` token and starts Kiro with the token, grant and workflow.
 6. In Kiro, open a new chat. Confirm `agentledger-ec2` is connected.
 
 ## The demo
@@ -28,19 +30,14 @@ Say each prompt to Kiro as written. What to expect is on the right.
 
 ### Revoke (step 7)
 
-In the SSM shell, from `/home/ssm-user/Agent-Ledger`:
+On your laptop, signed in:
 
-```bash
-sed -i 's/"status": "active"/"status": "revoked"/' gateway-grants.json
+```powershell
+agentledger grant revoke <grant id>
 ```
 
-Undo after the demo:
-
-```bash
-sed -i 's/"status": "revoked"/"status": "active"/' gateway-grants.json
-```
-
-No restart is needed; the gateway re-reads the grant on every call.
+A revoke cannot be undone. Make a new grant (step 2 of "Before the demo") and relaunch Kiro with it to continue.
+No restart is needed; the gateway reads the grant on every call.
 
 ### Show the audit (step 8)
 
@@ -66,7 +63,7 @@ Do this last: it locks the grant, so the other steps stop working until you rele
 Point to make: the agent kept pushing against its limits, and the gateway cut it off by itself. Two refusals in a row are fine; an allowed call in between starts the count again.
 ## Extended demo: from commit to accepted change
 
-Only run this once the GitHub App has **Actions: Read-only** and **Pull requests: Read and write** (see `docs/gateway.md`), and the EC2 grant lists the tools `get_test_result`, `open_pull_request` and `get_pull_request`. Keep the eight-step demo above as the fallback.
+Only run this once the GitHub App has **Actions: Read-only** and **Pull requests: Read and write** (see `docs/gateway.md`), and your grant lists the tools `get_test_result`, `open_pull_request` and `get_pull_request`. Keep the eight-step demo above as the fallback.
 
 The demo repo's test fails until `greeting.py` with `greet(name)` exists (issue #1).
 
@@ -93,7 +90,8 @@ Reset: delete the demo branches (`gh api -X DELETE repos/OumarouDG/agentledger-d
 
 ## After the demo
 
-- Revert the grant to `active` (above).
+- Revoke the demo grant if you did not already: `agentledger grant revoke <grant id>`.
+- Run `.\scripts\reset-demo.ps1` to clean the demo repo.
 - Release any Sentinel lock: `rm -f gateway-quarantine.json` in the SSM shell.
 - Delete the demo branch: `gh api -X DELETE repos/OumarouDG/agentledger-demo/git/refs/heads/agentledger/wf_001/demo`.
 
@@ -103,13 +101,15 @@ Reset: delete the demo branches (`gh api -X DELETE repos/OumarouDG/agentledger-d
 |---|---|
 | `agentledger-ec2` not connected in Kiro | The tunnel is down. Run `.\scripts\launch-kiro.ps1` again (Kiro closed first). |
 | Every call is 401 | Token expired (12 hours). Run the launch script again. |
-| `denied: unknown_grant` or `grant_store_unavailable` | `gateway-grants.json` is missing or broken on EC2. |
+| `denied: unknown_grant` | The grant id is wrong or not in DynamoDB. Check with `agentledger grant show <id>`. |
+| `denied: grant_expired` | Grants last at most 4 hours. Make a new one and relaunch Kiro. |
+| `denied: grant_store_unavailable` | The gateway cannot read DynamoDB. Check the instance role and `AGENTLEDGER_GRANT_STORE=dynamodb`. |
 | `denied: audit_unavailable` | The gateway cannot write its audit file. Check the folder permissions on EC2. |
 | `get_issue` says `github auth failed` | The GitHub App key secret or its permission on EC2 changed. |
 
 ## What not to claim
 
-- Grants currently come from a file on the server. A real grant store (DynamoDB, Josh) is in progress.
+- Grants are in DynamoDB. The grant records are not signed and have no tamper-evident history.
 - The gateway only controls tool calls that go through it. It cannot see a developer's local shell or files, and the demo repo cannot lock `main` on a free private plan.
 - A valid agent token cannot be revoked early (12 hours). Grants are what get revoked.
 - The audit file is a plain file on the server. It is not tamper-proof.

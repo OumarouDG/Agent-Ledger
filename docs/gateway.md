@@ -42,9 +42,11 @@ Kiro expands `${VAR}` from your environment, so no token is stored in the file. 
 
 `.kiro/settings/mcp.json` has `agentledger-local` (enabled) and `agentledger-ec2` (tunnel on port 18000, disabled until the EC2 tunnel is up).
 
+A delegated child grant is created by the runtime (`agentledger run`) from its parent's holder. If a child omits `base_branch` or `max_tokens`, it inherits the parent's value, never the wider gateway default.
+
 ## Launching Kiro against EC2
 
-Close every Kiro window, then run `.\scripts\launch-kiro.ps1` from the repo root. It starts the SSM tunnel (port 18000) if needed, mints the agent token, sets `AGENTLEDGER_TOKEN`, `AGENTLEDGER_GRANT_ID` and `AGENTLEDGER_WORKFLOW_ID` for the new Kiro process only, and starts Kiro. Options: `-Agent`, `-GrantId`, `-WorkflowId`. The token is never printed or written to disk and lasts about 12 hours; run the script again to refresh it. Kiro must be started by the script: a variable set in a terminal after Kiro is running does not reach it.
+Close every Kiro window, then run `.\scripts\launch-kiro.ps1` from the repo root. It starts the SSM tunnel (port 18000) if needed, mints the agent token, sets `AGENTLEDGER_TOKEN`, `AGENTLEDGER_GRANT_ID` and `AGENTLEDGER_WORKFLOW_ID` for the new Kiro process only, and starts Kiro. `-GrantId` is required (create one with `agentledger grant create`). Other options: `-Agent`, `-WorkflowId`. The token is never printed or written to disk and lasts about 12 hours; run the script again to refresh it. Kiro must be started by the script: a variable set in a terminal after Kiro is running does not reach it.
 
 ## Reaching the gateway without Kiro
 
@@ -63,9 +65,9 @@ Set these on the gateway process: `AGENTLEDGER_GITHUB_APP_ID`, `AGENTLEDGER_GITH
 
 A grant-protected tool runs this check, failing closed on any doubt: agent known, grant header present, workflow header present, grant exists, grant agent equals the token's agent, workflow matches, status `active`, not expired, every parent grant usable, tool listed in the grant's `tools` (`delegable_tools` never allows execution). Every allow and deny is appended to the audit file. A denied call returns `denied: <reason>`.
 
-**Stub:** there is no grant service yet. `JsonFileGrantStore` reads `AGENTLEDGER_GRANTS_FILE` (default `gateway-grants.json`) on every lookup, so a revoke applies to the next request. Replace it with Joshua's service behind `gateway.grants.GrantStore`. Audit goes to `AGENTLEDGER_AUDIT_FILE` (default `gateway-audit.jsonl`), a placeholder until the Ledger schema is agreed.
+**Grant store:** grants live in DynamoDB (`agentledger-grants`), written by the grant service (`controlplane/grants`) through `agentledger grant create` and `agentledger grant revoke`. The gateway reads the grant on every call, so a revoke applies to the next request. `JsonFileGrantStore` (`AGENTLEDGER_GRANTS_FILE`, default `gateway-grants.json`) remains for local development and tests only. Audit goes to `AGENTLEDGER_AUDIT_FILE` (default `gateway-audit.jsonl`); the line format is in `shared/event.schema.json`.
 
-Example grants file:
+Example grants file (development store only):
 
 ```json
 {"grants": {"grant_001": {"agent_id": "agent_coder", "workflow_id": "wf_001", "human_id": "alice",
@@ -116,8 +118,8 @@ Every protected call writes lines to `gateway-audit.jsonl` (`AGENTLEDGER_AUDIT_F
 
 ## Limitations
 
-- Grants come from a local dev file, not an authoritative service.
-- No resource checks (repo/branch), no Sentinel rules, no real GitHub calls yet.
+- The gateway only controls tool calls that go through it.
+- The audit file and the Sentinel lock file are plain files on the server, not tamper-proof.
 - A token stays valid until it expires; revocation applies to grants, not tokens.
 - Plain HTTP on loopback. TLS and exposure are the job of the tunnel or proxy in front.
 ## Tests
