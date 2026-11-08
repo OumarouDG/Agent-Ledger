@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from decimal import Decimal
 import threading
 import time
 
@@ -64,11 +65,18 @@ def test_good_messages_become_converse_format():
 
 
 @pytest.mark.parametrize("limit, expected", [
-    (None, 1024), (0, 1024), (-5, 1024), ("500", 1024), (True, 1024),
-    (300, 300), (999_999, llm.HARD_MAX_TOKENS)])
+    (None, 1024), (300, 300), (Decimal("300"), 300), (300.0, 300), (1, 1),
+    (999_999, llm.HARD_MAX_TOKENS), (Decimal("999999"), llm.HARD_MAX_TOKENS)])
 def test_max_tokens_never_exceeds_the_hard_cap(limit, expected):
     assert llm.effective_max_tokens(limit) == expected
 
+
+@pytest.mark.parametrize("limit", [0, -5, "500", True, False, [], {}, Decimal("2.5"), 2.5,
+                                   Decimal("0"), Decimal("-1"), float("nan"), float("inf"),
+                                   Decimal("NaN")])
+def test_a_bad_limit_is_an_error_not_no_limit(limit):
+    with pytest.raises(llm.LLMError):
+        llm.effective_max_tokens(limit)
 
 def test_converse_joins_text_and_reports_usage():
     out = llm.BedrockLLM(FakeBedrock()).converse("m.x-v1:0", USER, None, 50)

@@ -7,6 +7,7 @@ Agents never get AWS credentials. The grant decides which models an agent may us
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 MAX_MESSAGES = 20
 MAX_MESSAGE_CHARS = 8_000
@@ -48,11 +49,20 @@ def validate_messages(messages) -> list[dict]:
 
 
 def effective_max_tokens(grant_limit) -> int:
-    """The grant's cap, never above the hard limit; the default when the grant has none."""
-    if isinstance(grant_limit, int) and not isinstance(grant_limit, bool) and grant_limit > 0:
-        return min(grant_limit, HARD_MAX_TOKENS)
-    return DEFAULT_MAX_TOKENS
+    """The grant's cap, never above the hard limit; the default when the grant has none.
 
+    DynamoDB hands numbers back as Decimal, so whole Decimals count as numbers. A limit that
+    is present but not a positive whole number is an error, never 'no limit': a bad value must
+    not quietly allow a longer reply than the grant intended."""
+    if grant_limit is None:
+        return DEFAULT_MAX_TOKENS
+    if isinstance(grant_limit, bool) or not isinstance(grant_limit, (int, float, Decimal)):
+        raise LLMError("the grant's max_tokens is not a number")
+    if grant_limit != grant_limit or grant_limit in (float("inf"), float("-inf")):
+        raise LLMError("the grant's max_tokens is not a usable number")
+    if grant_limit <= 0 or grant_limit != int(grant_limit):
+        raise LLMError("the grant's max_tokens must be a positive whole number")
+    return min(int(grant_limit), HARD_MAX_TOKENS)
 
 class BedrockLLM:
     def __init__(self, client=None, region: str = "us-east-1"):
