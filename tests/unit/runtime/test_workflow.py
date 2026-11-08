@@ -54,7 +54,9 @@ def test_tree_has_the_agreed_shapes():
     assert (tester.agent_id, tester.parent_grant_id) == ("agent_tester", root.grant_id)
     assert tester.tools == {"get_test_result", "get_pull_request"}
     assert tester.delegable_tools == frozenset()
-    assert tester.resources == {"repository": REPO, "branch_prefix": "agentledger/wf_unit01/"}
+    # max_tokens is inherited from the root: an omitted limit is never wider than the parent's
+    assert tester.resources == {"repository": REPO, "branch_prefix": "agentledger/wf_unit01/",
+                                "max_tokens": 300}
 
     for g in flow.grants:
         assert (g.workflow_id, g.human_id, g.status) == ("wf_unit01", "alice", "active")

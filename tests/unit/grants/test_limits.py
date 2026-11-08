@@ -79,9 +79,27 @@ def test_child_inside_every_limit_is_allowed(store):
     assert child.resources["models"] == [MODEL] and child.resources["max_tokens"] == 100
 
 
-def test_child_may_omit_limits_which_only_narrows_it(store):
+def test_child_that_omits_limits_inherits_the_parents_not_the_defaults(store):
     parent = make_root(store, **LIMITS)
-    assert make_child(store, parent).resources == {"repository": "acme/demo"}
+    # Prefix and models stay unset (narrower: they deny). base_branch and max_tokens would
+    # otherwise fall back to the gateway defaults, which can be wider than the parent's.
+    assert make_child(store, parent).resources == {
+        "repository": "acme/demo", "base_branch": "main", "max_tokens": 500}
+
+
+def test_omitted_max_tokens_would_have_widened_to_the_default(store):
+    """The pair: without inheritance the gateway default (1024) applies; with it, 300 holds."""
+    assert effective_max_tokens(None) == DEFAULT_MAX_TOKENS == 1024  # the old, widened result
+    parent = make_root(store, max_tokens=300, delegable_tools=frozenset({"commit_file", "llm_converse"}))
+    child = make_child(store, parent)
+    assert child.resources["max_tokens"] == 300
+    assert effective_max_tokens(child.resources.get("max_tokens")) == 300
+
+
+def test_omitted_base_branch_is_inherited(store):
+    parent = make_root(store, base_branch="release",
+                       delegable_tools=frozenset({"commit_file", "llm_converse"}))
+    assert make_child(store, parent).resources["base_branch"] == "release"
 
 
 @pytest.mark.parametrize("kw", [
