@@ -30,6 +30,17 @@ def page(audit_path: str) -> bytes:
     return render_html(build_view(build_graph(events))).encode("utf-8")
 
 
+def host_ok(host: str | None) -> bool:
+    """Only the name 127.0.0.1 or localhost, on any port. The port differs behind a tunnel
+    (the browser says 18001, the server listens on 8001), so the name is what we check."""
+    if not host:
+        return False
+    name, sep, port = host.rpartition(":")
+    if not sep:
+        name, port = host, ""
+    return name in ("127.0.0.1", "localhost") and (port == "" or port.isdigit())
+
+
 def make_handler(audit_path: str):
     class Handler(BaseHTTPRequestHandler):
         server_version = "LedgerView"
@@ -45,8 +56,7 @@ def make_handler(audit_path: str):
             self.wfile.write(body)
 
         def do_GET(self):  # noqa: N802
-            port = self.server.server_address[1]
-            if self.headers.get("Host") not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            if not host_ok(self.headers.get("Host")):
                 return self._send(403, b"forbidden host")  # blocks DNS-rebinding style requests
             if self.path.split("?", 1)[0] not in ("/", "/index.html"):
                 return self._send(404, b"not found")
