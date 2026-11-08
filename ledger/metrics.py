@@ -106,11 +106,17 @@ def metrics_for_workflow(g: ProvenanceGraph, workflow_id: str) -> dict:
                                     artifacts=[p.id for p in accepted],
                                     note="merged and head commit validated; a merge is not an approval"),
         "verified_upstream_artifacts": _m(len(upstream), evidence=EXTERNAL, artifacts=sorted(upstream),
-                                          note="confirmed lineage edges only"),
+                                          event_ids=_events_of(g, upstream),
+                                          note="confirmed lineage edges only; ids are the events that observed each artifact"),
         "confirmed_downstream_reuse": _m(len(reuse), evidence=EXTERNAL, artifacts=sorted(reuse),
+                                         event_ids=_events_of(g, reuse),
                                          note="accepted deliverables from other work that derive from this workflow's commits"),
         "not_computed": ["first_pass_ci_success", "cost_usd_per_verified_outcome", "value_score"],
     }
+
+
+def _events_of(g: ProvenanceGraph, artifact_ids) -> list[str]:
+    return [i for a in artifact_ids if a in g.nodes for i in g.nodes[a].attrs.get("source_event_ids", [])]
 
 
 def _count(items) -> dict[str, int]:
