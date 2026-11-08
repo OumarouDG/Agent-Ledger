@@ -54,6 +54,7 @@ class Sentinel:
         self._path = Path(lock_path)
         self.threshold = threshold
         self._counts: dict[str, int] = {}
+        self._mem_locked: set[str] = set()  # locks that could not be written to the file
         self._lock = threading.Lock()
 
     @property
@@ -64,6 +65,8 @@ class Sentinel:
         """True when the grant is locked. An unreadable lock file locks everything (fail closed)."""
         if not grant_id or not self.enabled:
             return False
+        if grant_id in self._mem_locked:
+            return True
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
             return grant_id in data["locked"]
@@ -108,4 +111,5 @@ class Sentinel:
                 self._path.write_text(json.dumps({"locked": locked}, sort_keys=True),
                                       encoding="utf-8")
             except OSError as e:
+                self._mem_locked.add(grant_id)  # still locked until restart
                 log.error("sentinel could not write the lock file: %s", type(e).__name__)
