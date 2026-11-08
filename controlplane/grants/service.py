@@ -236,17 +236,26 @@ def load_chain(store: GrantWriter, parent_grant_id: str) -> Chain:
     return Chain(tuple(grants))
 
 
-def _resources_of(req: GrantRequest) -> dict:
-    """What gets stored. Only limits that were asked for are written."""
+def _resources_of(req: GrantRequest, parent: Grant | None = None) -> dict:
+    """What gets stored. Only limits that were asked for are written.
+
+    A child that leaves out base_branch or max_tokens gets the parent's value, never the
+    gateway default: an omitted limit must not be wider than the parent's."""
     r: dict = {"repository": req.repository}
+    base_branch, max_tokens = req.base_branch, req.max_tokens
+    if parent is not None:
+        if base_branch is None:
+            base_branch = parent.resources.get("base_branch")
+        if max_tokens is None:
+            max_tokens = parent.resources.get("max_tokens")
     if req.branch_prefix is not None:
         r["branch_prefix"] = req.branch_prefix
-    if req.base_branch is not None:
-        r["base_branch"] = req.base_branch
+    if base_branch is not None:
+        r["base_branch"] = base_branch
     if req.models:
         r["models"] = sorted(req.models)
-    if req.max_tokens is not None:
-        r["max_tokens"] = req.max_tokens
+    if max_tokens is not None:
+        r["max_tokens"] = max_tokens
     return r
 
 def create_grant(req: GrantRequest, *, store: GrantWriter, human: HumanPrincipal | None = None,
@@ -271,7 +280,7 @@ def create_grant(req: GrantRequest, *, store: GrantWriter, human: HumanPrincipal
         parent_grant_id=req.parent_grant_id,
         tools=req.tools,
         delegable_tools=req.delegable_tools,
-        resources=_resources_of(req),
+        resources=_resources_of(req, chain.grants[0] if chain.grants else None),
     )
     created_by = human.username if req.parent_grant_id is None else delegator_agent_id  # type: ignore[union-attr]
     store.put_new(grant, created_at=int(now), created_by=created_by)  # type: ignore[arg-type]
