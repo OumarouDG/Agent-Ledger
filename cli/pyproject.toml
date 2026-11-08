@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentledger"
+version = "0.0.1"
+description = "AgentLedger CLI: human sign-in and session commands"
+requires-python = ">=3.11"
+# Install editable from the repo (`pip install -e cli`): login imports controlplane/ from the repo root.
+dependencies = [
+    "click>=8.1",
+    "keyring>=25",
+    "requests>=2.31",
+    "pyjwt[crypto]>=2.8",
+]
+
+[project.scripts]
+agentledger = "agentledger.main:cli"
+
+[tool.setuptools]
+packages = ["agentledger"]

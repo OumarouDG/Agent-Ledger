@@ -18,3 +18,4 @@ dist/
 cli/bin/
 
 .DS_Store
+*.egg-info/
