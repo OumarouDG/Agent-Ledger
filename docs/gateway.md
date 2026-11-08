@@ -46,6 +46,10 @@ Kiro expands `${VAR}` from your environment, so no token is stored in the file. 
 
 Close every Kiro window, then run `.\scripts\launch-kiro.ps1` from the repo root. It starts the SSM tunnel (port 18000) if needed, mints the agent token, sets `AGENTLEDGER_TOKEN`, `AGENTLEDGER_GRANT_ID` and `AGENTLEDGER_WORKFLOW_ID` for the new Kiro process only, and starts Kiro. Options: `-Agent`, `-GrantId`, `-WorkflowId`. The token is never printed or written to disk and lasts about 12 hours; run the script again to refresh it. Kiro must be started by the script: a variable set in a terminal after Kiro is running does not reach it.
 
+## Reaching the gateway without Kiro
+
+`.\scripts\start-tunnel.ps1` opens only the SSM tunnel (no Kiro, no token). The MCP address is then `http://127.0.0.1:18000/mcp`. Send `Authorization: Bearer <agent token>`, `X-Grant-Id` and `X-Workflow-Id` on every call. Two people on one laptop cannot share port 18000; use `-LocalPort` for a second tunnel.
+
 ## Tools
 
 - `agentledger_whoami`, `agentledger_ping`: need a valid agent token only.
