@@ -174,9 +174,15 @@ class _Caller:
         self.result.timings.append(CallTiming(s.agent_id, tool, ms, outcome))
         return f"{ms:6.0f} ms"
 
-    def __call__(self, s: AgentSession, tool: str, describe: Callable[[Any], str], **args):
+    def pause(self, s: AgentSession, tool: str, what: str) -> None:
+        """Run before_call (the --step pause) without making a call."""
         if self.before_call is not None:
-            self.before_call(s.agent_id, tool, s.grant_id, describe_args(tool, args))
+            self.before_call(s.agent_id, tool, s.grant_id, what)
+
+    def __call__(self, s: AgentSession, tool: str, describe: Callable[[Any], str], *,
+                 _pause: bool = True, **args):
+        if _pause:
+            self.pause(s, tool, describe_args(tool, args))
         head = f"  {s.agent_id:13} {tool:18} {s.grant_id or '(no grant)':22}"
         started = time.perf_counter()
         try:
@@ -311,9 +317,13 @@ def tester_step(flow: Workflow, tester: AgentSession, call: _Caller, result: Run
     sha = result.commit_sha
     attempts = max(1, int(timeout_s // interval_s))
     outcome, last = None, None
+    # One --step pause for the whole polling loop, not one per check.
+    call.pause(tester, "get_test_result",
+               f"check the test run for {sha[:12]} every {interval_s:.0f} s, "
+               f"up to {attempts} times")
     for n in range(1, attempts + 1):
         sleep(interval_s)
-        last = call(tester, "get_test_result", _describe_test, sha=sha)
+        last = call(tester, "get_test_result", _describe_test, _pause=False, sha=sha)
         outcome = _outcome(last, sha, n)
         if outcome:
             break

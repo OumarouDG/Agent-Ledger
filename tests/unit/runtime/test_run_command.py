@@ -3,6 +3,7 @@ keyring), in-memory grants, in-process gateway with fake GitHub and fake model."
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 
@@ -15,6 +16,7 @@ from agentledger.main import cli
 from agentledger.storage import TokenStore
 from controlplane.grants import service
 from controlplane.runtime import agents as ag
+from controlplane.runtime import workflow as wfm
 from controlplane.runtime.agents import CallTiming
 from gateway.github import GitHubError
 from tests.unit.cli.conftest import MemoryKeyring
@@ -184,10 +186,26 @@ def test_step_waits_before_every_call(env, monkeypatch):
     monkeypatch.setattr(run_commands, "_wait", wait)
     res = run("--issue", "1", "--repo", "acme/demo", "--step")
     assert res.exit_code == 0, res.output
-    # One prompt per call, and the gateway had seen exactly i calls at prompt i.
-    assert seen_before_each_prompt == list(range(CALLS_ON_HAPPY_PATH))
-    assert res.output.count("[step] next:") == CALLS_ON_HAPPY_PATH
+    # A prompt before each of the 6 Lead and Coder calls (gateway had seen i calls at prompt
+    # i), one before the polling loop (6 seen), none per poll, one before get_pull_request
+    # (6 + 3 polls = 9 seen).
+    assert seen_before_each_prompt == [0, 1, 2, 3, 4, 5, 6, 9]
+    assert res.output.count("[step] next:") == 8
     assert f"agentledger grant revoke {root_id(env)}" in res.output
+
+
+def test_step_pauses_once_for_the_whole_polling_loop(env, monkeypatch):
+    sign_in(env)
+    env["github"].runs = lambda sha, n: not_found(sha)  # all 18 checks run
+    prompts: list[str] = []
+    monkeypatch.setattr(run_commands, "_wait", lambda p: prompts.append(p) or "")
+    res = run("--issue", "1", "--repo", "acme/demo", "--step")
+    assert res.exit_code == 3, res.output
+    polls = [d for d in decisions(env) if d[1] == "get_test_result"]
+    assert len(polls) == 18
+    assert len(prompts) == 8  # 6 + one for polling + get_pull_request, not 6 + 18 + 1
+    assert res.output.count("calls get_test_result") == 1
+    assert "every 10 s, up to 18 times" in res.output
 
 
 def test_step_revoke_between_steps_denies_the_next_call(env, monkeypatch):
@@ -206,6 +224,47 @@ def test_step_revoke_between_steps_denies_the_next_call(env, monkeypatch):
     assert "agent_coder was denied create_branch" in res.output
     assert "DENIED: parent_grant_revoked" in res.output
     assert env["github"].branches == {}
+    # The summary reads the grants back: it must not claim they are still active.
+    assert "root revoked: the gateway denies all three grants" in res.output
+    assert "active until" not in res.output and "still active" not in res.output
+
+
+# --- grant status in the summary -------------------------------------------------------
+
+def test_summary_says_active_after_a_normal_run(env):
+    sign_in(env)
+    res = run("--issue", "1", "--repo", "acme/demo")
+    assert res.exit_code == 0, res.output
+    assert re.search(rf"active until \d\d:\d\d; revoke all with: agentledger grant revoke {root_id(env)}",
+                     res.output)
+    assert all(g.status == "active" for g in env["store"].items.values())  # left active
+
+
+def _flow(store):
+    return wfm.start_workflow(ALICE, 1, "acme/demo", store=store, agents=AGENTS, out=None,
+                              open_agent=opener())
+
+
+def test_grant_status_line_says_unknown_when_the_store_fails():
+    flow = _flow(MemStore())
+
+    class Broken:
+        def get(self, grant_id):
+            raise RuntimeError("store down")
+    line = run_commands.grant_status_line(flow, Broken())
+    assert line.startswith("status unknown (RuntimeError)") and "active" not in line
+
+
+def test_grant_status_line_names_each_state():
+    store = MemStore()
+    flow = _flow(store)
+    tid = flow.tester.grant_id
+    store.items[tid] = dataclasses.replace(store.items[tid], status="revoked")
+    assert run_commands.grant_status_line(flow, store) == "lead active, coder active, tester revoked"
+    assert run_commands.grant_status_line(flow, store, now=flow.root.expires_at + 1) \
+        .startswith("root expired:")
+    del store.items[flow.root.grant_id]
+    assert run_commands.grant_status_line(flow, store).startswith("root missing:")
 
 
 def test_step_with_closed_input_stops_before_sending(env):

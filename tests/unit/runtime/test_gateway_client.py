@@ -61,9 +61,9 @@ def test_empty_agent_id_is_refused(gateway, agent):
 
 def test_gateway_that_rejects_the_token_raises(gateway):
     # Our side trusts this client; the gateway does not, so it answers 401 before any tool.
-    ids = {**CLIENT_IDS, "fakerogueclient": "agent_rogue"}
-    s = session(gateway["url"], agent="agent_rogue", client_ids=ids,
-                mint=fake_mint({"agent_rogue": "fakerogueclient"}))
+    ids = {**CLIENT_IDS, "fakestrangerclient": "agent_stranger"}
+    s = session(gateway["url"], agent="agent_stranger", client_ids=ids,
+                mint=fake_mint({"agent_stranger": "fakestrangerclient"}))
     with pytest.raises(GatewayRejected):
         s.call("agentledger_whoami")
 

@@ -51,7 +51,38 @@ def _step_hook(echo):
     return before_call
 
 
-def _summary(flow, result, verdict: str, exit_code: int) -> list[str]:
+def _state(g, now: float) -> str:
+    if g is None:
+        return "missing"
+    if g.status != "active":
+        return g.status
+    if g.expires_at is not None and g.expires_at <= now:
+        return "expired"
+    return "active"
+
+
+def grant_status_line(flow, store, now: float | None = None) -> str:
+    """What the grants are now, read back from the store (consistent reads), not assumed."""
+    from datetime import datetime
+
+    now = time.time() if now is None else now
+    try:
+        states = [_state(store.get(g.grant_id), now) for g in flow.grants]
+    except Exception as e:  # noqa: BLE001 - any store failure: say so, never guess "active"
+        return (f"status unknown ({type(e).__name__}); check with: "
+                f"agentledger grant show {flow.root.grant_id}")
+    root, coder, tester = states
+    if root != "active":
+        return (f"root {root}: the gateway denies all three grants "
+                f"(lead {root}, coder {coder}, tester {tester}; children are denied through the root)")
+    if coder == tester == "active":
+        until = datetime.fromtimestamp(flow.root.expires_at).astimezone().strftime("%H:%M")
+        return (f"active until {until}; revoke all with: "
+                f"agentledger grant revoke {flow.root.grant_id}")
+    return f"lead active, coder {coder}, tester {tester}"
+
+
+def _summary(flow, result, verdict: str, exit_code: int, status: str) -> list[str]:
     from controlplane.runtime.agents import latency_summary
 
     lines = ["", "Summary",
@@ -59,8 +90,7 @@ def _summary(flow, result, verdict: str, exit_code: int) -> list[str]:
              f"repo {flow.repository}",
              f"  grants   lead {flow.root.grant_id}  coder {flow.coder.grant_id}  "
              f"tester {flow.tester.grant_id}",
-             f"           still active until they expire; revoke all with: "
-             f"agentledger grant revoke {flow.root.grant_id}"]
+             f"           {status}"]
     if result is not None:
         lines.append(f"  branch   {result.branch or '(none)'}")
         lines.append(f"  commit   {result.commit_sha or '(none)'}")
@@ -114,8 +144,9 @@ def run(issue: int, repository: str, workflow_id: str | None, step: bool) -> Non
 
     human = grant_commands._signed_in()
     open_agent = _open_agent()
+    store = grant_commands._store()
     try:
-        flow = workflow.start_workflow(human, issue, repository, store=grant_commands._store(),
+        flow = workflow.start_workflow(human, issue, repository, store=store,
                                        workflow_id=workflow_id, open_agent=open_agent,
                                        out=click.echo)
     except GrantRefused as e:
@@ -142,6 +173,53 @@ def run(issue: int, repository: str, workflow_id: str | None, step: bool) -> Non
         click.echo(f"\nRun stopped: {e}")
     except KeyboardInterrupt:
         click.echo("\nRun interrupted.")
-    for line in _summary(flow, result, verdict, code):
+    for line in _summary(flow, result, verdict, code, grant_status_line(flow, store)):
         click.echo(line)
+    raise SystemExit(code)
+
+
+@click.command(help="Run agent_rogue against a live workflow. Every attack must be refused with "
+                    "its expected reason. Exit 0 all refused, 1 anything allowed, a wrong reason "
+                    "or the probe could not run, 2 gateway unreachable.")
+@click.option("--workflow", "workflow_id", required=True,
+              help="A workflow with an active run (agentledger run --workflow ...).")
+@click.option("--issue", type=int, default=1, show_default=True,
+              help="Issue Rogue may read on its own grant (the baseline and Sentinel check).")
+@click.option("--until-locked", is_flag=True,
+              help="Keep violating on Rogue's own grant until the Sentinel locks it, then show "
+                   "an allowed tool is denied too.")
+def probe(workflow_id: str, issue: int, until_locked: bool) -> None:
+    from controlplane.auth.agent_tokens import AwsCredentialsError
+    from controlplane.auth.jwt_verify import AuthError
+    from controlplane.grants.errors import GrantStoreError
+    from controlplane.runtime import probe as rogue
+    from controlplane.runtime import workflow
+    from controlplane.runtime.gateway_client import GatewayError, GatewayUnavailable
+
+    from . import grant_commands
+
+    try:
+        workflow.check_workflow_id(workflow_id)
+    except workflow.WorkflowError as e:
+        raise click.BadParameter(str(e), param_hint="--workflow") from None
+    human = grant_commands._signed_in()
+    try:
+        result = rogue.run_probe(human, workflow_id, store=grant_commands._store(),
+                                 open_agent=_open_agent(), issue=issue,
+                                 until_locked=until_locked, out=click.echo)
+    except GatewayUnavailable as e:
+        click.echo(f"\nProbe stopped: {e}")
+        click.echo("  exit 2")
+        raise SystemExit(EXIT_UNREACHABLE) from None
+    except (rogue.ProbeError, GrantStoreError, AwsCredentialsError, GatewayError) as e:
+        raise click.ClickException(str(e)) from None
+    except AuthError as e:
+        raise click.ClickException(f"{rogue.ROGUE}'s token was refused ({e.reason})") from None
+
+    attacks = [a for a in result.attempts if a.expected != rogue.ALLOWED]
+    baseline_ok = all(a.ok for a in result.attempts if a.expected == rogue.ALLOWED)
+    code = EXIT_PASSED if result.ok else EXIT_FAILED
+    click.echo(f"\n  {sum(a.ok for a in attacks)}/{len(attacks)} refused with the expected "
+               f"reason; baseline {'ok' if baseline_ok else 'FAILED'}")
+    click.echo(f"  exit {code}")
     raise SystemExit(code)

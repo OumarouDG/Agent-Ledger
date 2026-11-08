@@ -17,3 +17,4 @@ for _cmd in commands.ALL:
     cli.add_command(_cmd)
 cli.add_command(grant_commands.grant)
 cli.add_command(run_commands.run)
+cli.add_command(run_commands.probe)

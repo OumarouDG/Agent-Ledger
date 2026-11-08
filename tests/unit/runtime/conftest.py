@@ -27,7 +27,7 @@ ISS = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_FAKE"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 WF = "wf_test01"
 CLIENT_IDS = {"fakeleadclient": "agent_lead", "fakecoderclient": "agent_coder",
-              "faketesterclient": "agent_tester"}
+              "faketesterclient": "agent_tester", "fakerogueclient": "agent_rogue"}
 AGENT_CLIENT = {agent: cid for cid, agent in CLIENT_IDS.items()}
 
 
@@ -110,6 +110,12 @@ class MemStore:
         self.items[grant_id] = dataclasses.replace(g, status="revoked")
         return True
 
+    def by_workflow(self, workflow_id):
+        return [g for g in self.items.values() if g.workflow_id == workflow_id]
+
+    def all(self):
+        return list(self.items.values())
+
 
 def opener(url="http://127.0.0.1:9/mcp", mint=None):
     """open_agent for tests: a real AgentSession with a local key and a fake mint."""
@@ -122,12 +128,14 @@ def opener(url="http://127.0.0.1:9/mcp", mint=None):
 
 
 @contextlib.contextmanager
-def serve_gateway(store, d, github_app=None, llm_client=None):
-    """Run a gateway over `store` on a free loopback port; yields its /mcp URL."""
+def serve_gateway(store, d, github_app=None, llm_client=None, sentinel_threshold=0):
+    """Run a gateway over `store` on a free loopback port; yields its /mcp URL.
+    The Sentinel is off unless `sentinel_threshold` is set."""
     app = gw.create_server(
         verifier=FakeJwksVerifier(), client_ids=CLIENT_IDS, grants=store,
         audit_path=d / "audit.jsonl", github_app=github_app, llm_client=llm_client,
-        sentinel=sentinel_mod.Sentinel(d / "quarantine.json", threshold=0)).http_app()
+        sentinel=sentinel_mod.Sentinel(d / "quarantine.json",
+                                       threshold=sentinel_threshold)).http_app()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
     t = threading.Thread(target=server.run, daemon=True)
     t.start()
