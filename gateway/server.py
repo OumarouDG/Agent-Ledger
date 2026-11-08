@@ -13,7 +13,7 @@ from fastmcp.server.dependencies import get_access_token, get_http_headers
 
 from controlplane.auth.jwt_verify import Verifier, agent_client_ids
 
-from . import audit, github
+from . import audit, github, llm
 from .auth import AUTH_MODE, AgentTokenVerifier
 from .authorization import Decision, authorize
 from .grants import GrantStore, JsonFileGrantStore
@@ -30,7 +30,8 @@ def create_server(verifier: Verifier | None = None,
                   client_ids: Mapping[str, str] | None = None,
                   grants: GrantStore | None = None,
                   audit_path: Path | None = None,
-                  github_app: github.GitHubApp | None = None) -> FastMCP:
+                  github_app: github.GitHubApp | None = None,
+                  llm_client: llm.BedrockLLM | None = None) -> FastMCP:
     """Build the gateway. Pass `verifier`/`client_ids` in tests; defaults load shared/cognito.json."""
     try:
         verifier = verifier or Verifier.from_config()
@@ -44,10 +45,11 @@ def create_server(verifier: Verifier | None = None,
     grants = grants or JsonFileGrantStore(
         os.environ.get("AGENTLEDGER_GRANTS_FILE", "gateway-grants.json"))
     audit_path = audit_path or audit.default_path()
+    llm_client = llm_client or llm.BedrockLLM()
     github_app = github_app or github.from_env(os.environ)  # None = mock issues (dev only)
 
     def guard(tool: str, resource: dict | None = None, repo_required: bool = False,
-              branch: str | None = None):
+              branch: str | None = None, model: str | None = None):
         """Run the authorization pipeline for a protected tool. Raises ToolError on denial.
 
         Every outcome, allowed or denied, is written to the audit trail. If the event cannot be\n        written the call is denied."""
@@ -73,6 +75,11 @@ def create_server(verifier: Verifier | None = None,
             resource["branch"] = branch
             if not ok:
                 decision = Decision(False, "branch_not_permitted", decision.grant)
+        if decision.allowed and model is not None:
+            allowed_models = decision.grant.resources.get("models")
+            resource["model"] = model
+            if not (isinstance(allowed_models, list) and model in allowed_models):
+                decision = Decision(False, "model_not_permitted", decision.grant)
         try:
             audit.record(
                 audit_path, agent_id=agent_id, grant_id=grant_id, workflow_id=workflow_id,
@@ -125,6 +132,28 @@ def create_server(verifier: Verifier | None = None,
             return _need_github().commit_file(
                 grant.resources["repository"], branch, path, content, message)
         except github.GitHubError as e:
+            raise ToolError(str(e)) from e
+    @mcp.tool
+    def llm_converse(messages: list[dict], model: str | None = None,
+                     system: str | None = None) -> dict:
+        """Ask a language model. messages is a list of {"role": "user"|"assistant", "content": text}
+        that alternates and ends with a user message. The model must be one your grant lists
+        (the first one is used if you give none). Output length is capped by your grant."""
+        # Peek at the grant to pick the default model; the guard still does the real check.
+        token = get_access_token()
+        agent_id = agents.get(token.client_id) if token else None
+        headers = get_http_headers()
+        try:
+            g = grants.get(headers.get("x-grant-id") or "")
+        except Exception:
+            g = None
+        listed = (g.resources.get("models") if g and g.agent_id == agent_id else None) or []
+        chosen = model or (listed[0] if listed else "")
+        grant = guard("llm_converse", {}, model=chosen)
+        try:
+            return llm_client.converse(
+                chosen, messages, system, llm.effective_max_tokens(grant.resources.get("max_tokens")))
+        except llm.LLMError as e:
             raise ToolError(str(e)) from e
     @mcp.tool
     def agentledger_ping() -> dict:
