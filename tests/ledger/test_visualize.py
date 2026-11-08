@@ -50,6 +50,19 @@ def test_failed_ci_is_red_and_the_commit_is_not_validated():
     assert link["id"] is None and "failure" in link["not_passing"]
 
 
+def test_unmerged_pr_and_failed_run_are_drawn_in_the_chain():
+    v = view([*commit_events("wf_a", "a"), *run_events("wf_a", "a", conclusion="failure"),
+              *pr_events("wf_a", "a", 7, merged=False)])
+    ch = v["chains"][PR]
+    assert PR in ch["nodes"] and f"artifact:{REPO}:run:{ord('a')}" in ch["nodes"]
+    assert not any(n.startswith("human:github/") for n in ch["nodes"])  # nobody merged it
+
+
+def test_merger_is_drawn_for_a_merged_pr():
+    v = view(accepted_workflow("wf_a", "a", 7))
+    assert "human:github/OumarouDG" in v["chains"][PR]["nodes"]
+
+
 def test_wrong_sha_run_does_not_validate():
     v = view([*commit_events("wf_a", "a"), *run_events("wf_a", "a", tested_sha="b" * 40, run_id=9)])
     assert node(v, cid("a"))["class"] == "warn"  # PENDING, never green

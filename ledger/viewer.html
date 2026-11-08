@@ -165,15 +165,22 @@ function draw(){
     return true;
   });
   var showLabels=edges.length<45;
-  var eg=el("g",{},vp),ng=el("g",{},vp);
+  var eg=el("g",{},vp),ng=el("g",{},vp),plabels={};
   edges.forEach(function(e){
     var a=pos[e.from],b=pos[e.to];
     var sx,sy,tx,ty,d,dir=a.x<b.x?1:(a.x>b.x?-1:0);
-    if(vert){
+    var lx=null,ly=null;
+    if(vert&&Math.abs(a.y-b.y)>100){
+      sx=a.x+W;tx=b.x+W;sy=a.y+H/2;ty=b.y+H/2;
+      var bx=sx+34+Math.abs(ty-sy)*0.2;
+      d="M"+sx+","+sy+" C"+bx+","+sy+" "+bx+","+ty+" "+tx+","+ty;
+      lx=sx+(bx-sx)*0.75+4;ly=(sy+ty)/2;
+    }else if(vert){
       var down=a.y<b.y;
       sx=a.x+W/2;tx=b.x+W/2;sy=down?a.y+H:a.y;ty=down?b.y:b.y+H;
       var vo=Math.max(24,Math.abs(ty-sy)/2);
       d="M"+sx+","+sy+" C"+sx+","+(sy+(down?vo:-vo))+" "+tx+","+(ty+(down?-vo:vo))+" "+tx+","+ty;
+      lx=sx+8;ly=(sy+ty)/2;
     }else{
       sy=a.y+H/2;ty=b.y+H/2;
       if(dir>=0){sx=a.x+W;tx=b.x;}else{sx=a.x;tx=b.x+W;}
@@ -190,8 +197,15 @@ function draw(){
     var hit=el("path",{d:d,"class":"hit"},eg);
     hit.addEventListener("click",function(ev){ev.stopPropagation();select(e.edge_id,"edge");});
     if(S.sel===e.edge_id&&S.selKind==="edge"){p.setAttribute("stroke-width","4.5");}
-    if(showLabels||hi){var t=el("text",{x:(sx+tx)/2,y:(sy+ty)/2-4,"class":"elabel","text-anchor":"middle"},eg);t.textContent=e.relation+(cand?" (candidate)":"");}
+    if(showLabels||hi){
+      var anchor=lx!==null?"start":"middle";
+      var px=lx!==null?lx:(sx+tx)/2,py=lx!==null?ly:(sy+ty)/2-4;
+      var key=Math.round(px)+","+Math.round(py);
+      var pl=plabels[key]=plabels[key]||{x:px,y:py,a:anchor,t:[]};
+      pl.t.push(e.relation+(cand?" (candidate)":""));
+    }
   });
+  Object.keys(plabels).forEach(function(k){var pl=plabels[k];var t=el("text",{x:pl.x,y:pl.y,"class":"elabel","text-anchor":pl.a},eg);t.textContent=pl.t.join(" / ");});
   ids.forEach(function(i){
     var n=byId[i],p=pos[i];
     var g=el("g",{"class":"node "+n.class+((S.sel===i&&S.selKind==="node")?" sel":"")+((hiN&&!hiN[i])?" dim":""),transform:"translate("+p.x+","+p.y+")"},ng);

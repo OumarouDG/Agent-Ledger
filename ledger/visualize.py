@@ -139,6 +139,12 @@ def build_view(g: ProvenanceGraph, *, synthetic_label: str | None = None, workfl
                 members.add(l["id"])
         if commit and commit in g.nodes:
             members.update(x for x in g.nodes[commit].attrs.get("generated_by", []))
+        members.add(n.id)  # the PR itself, even when it is not merged
+        if commit and commit in g.nodes:  # any CI run that tested this commit, passing or not
+            members.update(e.to_id for e in g.out_edges(commit) if e.relation == "TESTED_BY")
+        merger = f"human:github/{n.attrs.get('merged_by')}"
+        if n.attrs.get("merged_by") and merger in g.nodes:
+            members.add(merger)  # who GitHub says merged it (a merge is not an approval)
         members &= ids
         chains[n.id] = {"state": ch["state"], "reason": ch["reason"], "complete": ch["complete"],
                         "links": ch["links"], "nodes": sorted(members),
