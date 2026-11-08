@@ -1,0 +1,2 @@
+fastmcp==4.1.6
+pyjwt[crypto]==2.15.1
