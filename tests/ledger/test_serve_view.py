@@ -40,6 +40,10 @@ def test_serves_a_fresh_page_on_loopback_only(tmp_path):
         assert code == 200 and "AgentLedger provenance" in body and headers["Cache-Control"] == "no-store"
         assert get(srv, "/other")[0] == 404
         assert get(srv, host="evil.example")[0] == 403
+        assert get(srv, host="127.0.0.1:18001")[0] == 200  # the browser's port behind a tunnel
+        assert get(srv, host="localhost:18001")[0] == 200
+        for bad in ("127.0.0.1.evil.com:8001", "evil.com:127", "127.0.0.1:abc", ""):
+            assert get(srv, host=bad)[0] == 403, bad
         audit.write_text("\n".join(json.dumps(e) for e in accepted_workflow("wf_b", "b", 8)), encoding="utf-8")
         assert "wf_b" in get(srv)[1]  # re-read on every load
     finally:
