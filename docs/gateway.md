@@ -68,6 +68,10 @@ Example grants file:
   "status": "active", "expires_at": 4102444800, "tools": ["get_issue"]}}}
 ```
 
+## Choosing the grant store
+
+`AGENTLEDGER_GRANT_STORE` selects it: unset or `json` uses the local file (development), `dynamodb` calls `controlplane.grants.store_from_env()`. Any other value, or a store that fails to load, stops the gateway at startup with a clear error. It never falls back to the file store, so a mistake cannot quietly enforce the wrong grants. Whatever store is used must implement `get(grant_id) -> Grant | None` and raise `GrantStoreError` on failure (the call is then denied).
+
 ## Write tools
 
 - `create_branch(branch)`: creates a branch from the grant's `resources.base_branch` (default `main`).
