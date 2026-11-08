@@ -48,6 +48,15 @@ def new_workflow_id() -> str:
     return "wf_" + secrets.token_hex(4)
 
 
+def new_run_id() -> str:
+    """Short ID for one run, so a workflow (e.g. the wf_002 demo) can be rehearsed repeatedly."""
+    return secrets.token_hex(3)
+
+
+def coder_branch(workflow_id: str, issue: int, run_id: str) -> str:
+    return f"{coder_prefix(workflow_id)}issue-{issue}-{run_id}"
+
+
 def check_workflow_id(workflow_id: str) -> str:
     if not isinstance(workflow_id, str) or not _WORKFLOW_ID.match(workflow_id):
         raise WorkflowError(f"workflow ID {workflow_id!r} must look like wf_<letters, digits, _ or ->")
@@ -84,10 +93,16 @@ class Workflow:
     coder: Grant
     tester: Grant
     lead: AgentSession
+    run_id: str
 
     @property
     def grants(self) -> tuple[Grant, Grant, Grant]:
         return (self.root, self.coder, self.tester)
+
+    @property
+    def branch(self) -> str:
+        """The branch Coder creates for this run: agentledger/<wf>/coder/issue-<n>-<run_id>."""
+        return coder_branch(self.workflow_id, self.issue, self.run_id)
 
 
 def delegate(lead: AgentSession, parent: Grant, req: GrantRequest, *, store: GrantWriter,
@@ -141,7 +156,7 @@ def start_workflow(human: HumanPrincipal | None, issue: int, repo: str = DEMO_RE
             e.add_note("grants NOT revoked after this failure, revoke by hand: " + ", ".join(left))
         raise
 
-    flow = Workflow(wf, repo, issue, username, root, coder, tester, lead)
+    flow = Workflow(wf, repo, issue, username, root, coder, tester, lead, new_run_id())
     if out is not None:
         out(format_tree(flow))
     return flow
@@ -183,8 +198,8 @@ def format_tree(flow: Workflow) -> str:
     """ASCII grant tree. Holds grant IDs, agents and limits only; never a token."""
     mins = max(0, int(((flow.root.expires_at or 0) - time.time()) // 60))
     return "\n".join([
-        f"workflow {flow.workflow_id}  repo {flow.repository}  issue #{flow.issue}  "
-        f"expires in {mins} min",
+        f"workflow {flow.workflow_id}  run {flow.run_id}  repo {flow.repository}  "
+        f"issue #{flow.issue}  expires in {mins} min",
         f"{flow.human_id} (signed in)",
         f"  +- {_line(flow.root)}",
         f"       +- {_line(flow.coder)}",

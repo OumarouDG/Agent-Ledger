@@ -9,59 +9,18 @@ from __future__ import annotations
 import dataclasses
 import re
 import time
-from dataclasses import dataclass
 
 import pytest
 
 from controlplane.grants.errors import GrantRefused
 from controlplane.grants.service import GrantRequest, revoke_grant
 from controlplane.runtime import workflow as wfm
-from controlplane.runtime.gateway_client import AgentSession, Denied, IdentityMismatch, ToolFailed
-from tests.unit.runtime.conftest import CLIENT_IDS, FakeJwksVerifier, fake_mint, serve_gateway
+from controlplane.runtime.gateway_client import Denied, IdentityMismatch, ToolFailed
+from tests.unit.runtime.conftest import (
+    AGENTS, ALICE, Human, MemStore, fake_mint, opener, serve_gateway)
 
-AGENTS = frozenset({"agent_lead", "agent_coder", "agent_tester", "agent_rogue"})
 REPO = "acme/demo"
 NOW = time.time()
-
-
-@dataclass(frozen=True)
-class Human:
-    username: str
-    groups: tuple[str, ...] = ("engineer",)
-
-
-ALICE = Human("alice")
-
-
-class MemStore:
-    """GrantWriter in memory. Records who created each grant."""
-
-    def __init__(self):
-        self.items: dict = {}
-        self.created_by: dict[str, str] = {}
-
-    def get(self, grant_id):
-        return self.items.get(grant_id)
-
-    def put_new(self, grant, *, created_at, created_by):
-        assert grant.grant_id not in self.items
-        self.items[grant.grant_id] = grant
-        self.created_by[grant.grant_id] = created_by
-
-    def mark_revoked(self, grant_id, *, revoked_at, revoked_by):
-        g = self.items.get(grant_id)
-        if g is None or g.status == "revoked":
-            return False
-        self.items[grant_id] = dataclasses.replace(g, status="revoked")
-        return True
-
-
-def opener(url="http://127.0.0.1:9/mcp", mint=None):
-    """open_agent for tests: real AgentSession with a local key and fake mint."""
-    def open_agent(agent_id, grant_id, workflow_id):
-        return AgentSession(agent_id, grant_id, workflow_id, url, mint=mint or fake_mint(),
-                            verifier=FakeJwksVerifier(), client_ids=CLIENT_IDS)
-    return open_agent
 
 
 def start(store, human=ALICE, out=None, **kw):
@@ -108,6 +67,17 @@ def test_generated_workflow_ids_are_fresh_and_prefixes_follow_them():
     assert re.fullmatch(r"wf_[0-9a-f]{8}", a.workflow_id) and a.workflow_id != b.workflow_id
     assert a.root.resources["branch_prefix"] == f"agentledger/{a.workflow_id}/"
     assert a.coder.resources["branch_prefix"] == f"agentledger/{a.workflow_id}/coder/"
+
+
+def test_each_run_of_one_workflow_gets_its_own_branch():
+    # wf_002 must be rehearsable: same workflow ID, a new branch every run.
+    store = MemStore()
+    runs = [start(store, workflow_id="wf_002") for _ in range(3)]
+    branches = {r.branch for r in runs}
+    assert len(branches) == 3
+    for r in runs:
+        assert re.fullmatch(r"agentledger/wf_002/coder/issue-1-[0-9a-f]{6}", r.branch)
+        assert r.branch.startswith(r.coder.resources["branch_prefix"])
 
 
 # --- delegator comes from the verified token ----------------------------------------------

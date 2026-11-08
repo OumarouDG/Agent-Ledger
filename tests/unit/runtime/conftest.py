@@ -1,7 +1,7 @@
 """In-process gateway for runtime tests: real server on 127.0.0.1, local RSA keys, fake store.
 
-Nothing here calls AWS or GitHub. The gateway has no GitHub App, so get_issue serves its
-mock issue #42; the Sentinel is off and its lock file and the audit file live in tmp dirs.
+Nothing here calls AWS or GitHub. Without a fake GitHub App the gateway serves its mock
+issue #42; the Sentinel is off and its lock file and the audit file live in tmp dirs.
 """
 
 from __future__ import annotations
@@ -78,12 +78,55 @@ def lead_grant(grant_id: str, **kw) -> Grant:
     return Grant(**base)
 
 
+@dataclasses.dataclass(frozen=True)
+class Human:
+    username: str
+    groups: tuple[str, ...] = ("engineer",)
+
+
+ALICE = Human("alice")
+AGENTS = frozenset({"agent_lead", "agent_coder", "agent_tester", "agent_rogue"})
+
+
+class MemStore:
+    """GrantWriter in memory. Records who created each grant."""
+
+    def __init__(self):
+        self.items: dict = {}
+        self.created_by: dict[str, str] = {}
+
+    def get(self, grant_id):
+        return self.items.get(grant_id)
+
+    def put_new(self, grant, *, created_at, created_by):
+        assert grant.grant_id not in self.items
+        self.items[grant.grant_id] = grant
+        self.created_by[grant.grant_id] = created_by
+
+    def mark_revoked(self, grant_id, *, revoked_at, revoked_by):
+        g = self.items.get(grant_id)
+        if g is None or g.status == "revoked":
+            return False
+        self.items[grant_id] = dataclasses.replace(g, status="revoked")
+        return True
+
+
+def opener(url="http://127.0.0.1:9/mcp", mint=None):
+    """open_agent for tests: a real AgentSession with a local key and a fake mint."""
+    from controlplane.runtime.gateway_client import AgentSession
+
+    def open_agent(agent_id, grant_id, workflow_id):
+        return AgentSession(agent_id, grant_id, workflow_id, url, mint=mint or fake_mint(),
+                            verifier=FakeJwksVerifier(), client_ids=CLIENT_IDS)
+    return open_agent
+
+
 @contextlib.contextmanager
-def serve_gateway(store, d):
+def serve_gateway(store, d, github_app=None, llm_client=None):
     """Run a gateway over `store` on a free loopback port; yields its /mcp URL."""
     app = gw.create_server(
         verifier=FakeJwksVerifier(), client_ids=CLIENT_IDS, grants=store,
-        audit_path=d / "audit.jsonl",
+        audit_path=d / "audit.jsonl", github_app=github_app, llm_client=llm_client,
         sentinel=sentinel_mod.Sentinel(d / "quarantine.json", threshold=0)).http_app()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
     t = threading.Thread(target=server.run, daemon=True)
