@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentLedger provenance graph</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.4 system-ui,Segoe UI,sans-serif;color:#1b2430;background:#fff;height:100vh;display:flex;flex-direction:column}
+#banner{display:none;background:#b3261e;color:#fff;padding:6px 12px;font-weight:600}
+#banner.on{display:block}
+#app{flex:1;display:flex;min-height:0}
+aside{width:290px;padding:10px 12px;overflow:auto;background:#f6f7f9;border-right:1px solid #dde1e7}
+#right{border-right:0;border-left:1px solid #dde1e7;width:340px}
+main{flex:1;position:relative;min-width:0;background:#fff}
+svg{width:100%;height:100%;display:block;cursor:grab}
+h1{font-size:15px;margin:0 0 6px}h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#5b6678;margin:14px 0 4px}
+h3{font-size:14px;margin:0 0 4px;word-break:break-all}
+select{width:100%;padding:4px;margin-bottom:6px}
+label.r{display:block;margin:2px 0}
+.m{display:flex;justify-content:space-between;gap:8px;padding:2px 0;border-bottom:1px solid #e5e8ee}
+.m span:last-child{font-weight:600;text-align:right}
+.k{color:#5b6678}.kv{display:grid;grid-template-columns:110px 1fr;gap:2px 8px;margin:6px 0;word-break:break-all}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-weight:600;font-size:12px}
+.pill.ok{background:#e1f4e8;color:#14683a}.pill.bad{background:#fde3e1;color:#a3231d}.pill.warn{background:#fff0cf;color:#8a5a00}.pill.neutral{background:#e8ebf0;color:#475166}
+button{font:inherit;padding:4px 8px;margin:2px 4px 2px 0;border:1px solid #b7bfcc;background:#fff;border-radius:4px;cursor:pointer}
+button:hover{background:#eef1f6}
+#tools{position:absolute;right:10px;top:10px;display:flex;gap:4px}
+.ev{font-family:Consolas,monospace;font-size:11px;word-break:break-all}
+.miss{color:#a3231d;font-weight:600}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-2px;border:2px solid}
+.foot{margin-top:14px;color:#5b6678;font-size:11px}
+.node rect{stroke-width:1.6}
+.node.ok rect{fill:#e6f6ec;stroke:#1f9d55}.node.bad rect{fill:#fdeaea;stroke:#d1342f}
+.node.warn rect{fill:#fff4dd;stroke:#d99100}.node.neutral rect{fill:#f1f3f6;stroke:#8a94a6}
+.node text{font-size:11px;fill:#1b2430;pointer-events:none}.node .sub{font-size:9px;fill:#5b6678}
+.node{cursor:pointer}.node.sel rect{stroke-width:3.4}.dim{opacity:.18}
+.edge{fill:none;stroke-width:1.6}.edge.verified{stroke:#3b6ea5}.edge.external{stroke:#1f7a4d}
+.edge.reported,.edge.inferred,.edge.cand{stroke:#d99100;stroke-dasharray:5 4}
+.edge.hi{stroke-width:3}.hit{fill:none;stroke:transparent;stroke-width:12;cursor:pointer}
+.elabel{font-size:9px;fill:#5b6678;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="banner"></div>
+<div id="app">
+<aside id="left">
+  <h1>AgentLedger provenance</h1>
+  <div class="k">Built from the audit file. Read-only. The audit file is not tamper-proof.</div>
+  <h2>Workflow</h2><select id="selWf"></select>
+  <h2>Deliverable (pull request)</h2><select id="selPr"></select>
+  <h2>View</h2>
+  <label class="r"><input type="radio" name="mode" value="chain" checked> Evidence chain of the deliverable</label>
+  <label class="r"><input type="radio" name="mode" value="workflow"> Whole workflow</label>
+  <h2>Workflow metrics</h2><div id="metrics"></div>
+  <h2>Legend</h2>
+  <div class="legend">
+    <div><i style="background:#e6f6ec;border-color:#1f9d55"></i>verified success</div>
+    <div><i style="background:#fdeaea;border-color:#d1342f"></i>denied, failed, not passing</div>
+    <div><i style="background:#fff4dd;border-color:#d99100"></i>pending, unknown, candidate</div>
+    <div><i style="background:#f1f3f6;border-color:#8a94a6"></i>structural (not a result)</div>
+  </div>
+  <div class="foot">Arrows follow the stored edges. An activity points to the grant and human that authorized it, and to the agent that ran it. Dashed amber edges are candidates and are never followed as confirmed.</div>
+</aside>
+<main><svg id="svg" role="img" aria-label="Provenance graph"></svg>
+  <div id="tools"><button id="bFit">Fit</button><button id="bIn">+</button><button id="bOut">-</button></div></main>
+<aside id="right"><div id="details"><div class="k">Click a node or an edge to see its evidence.</div></div></aside>
+</div>
+<script id="data" type="application/json">__LEDGER_DATA__</script>
+<script>
+(function(){
+"use strict";
+var NS="http://www.w3.org/2000/svg";
+try{
+var D=JSON.parse(document.getElementById("data").textContent);
+var byId={},eById={};
+D.nodes.forEach(function(n){byId[n.id]=n;});D.edges.forEach(function(e){eById[e.edge_id]=e;});
+var S={wf:null,pr:null,mode:"chain",sel:null,selKind:null,hi:null,extra:{},tx:20,ty:20,k:1};
+var W=190,H=44,GX=270,GY=62;
+function el(t,a,p){var e=document.createElementNS(NS,t);for(var k in a){e.setAttribute(k,a[k]);}if(p){p.appendChild(e);}return e;}
+function h(t,txt,cls,p){var e=document.createElement(t);if(txt!==undefined){e.textContent=txt;}if(cls){e.className=cls;}if(p){p.appendChild(e);}return e;}
+function clear(e){while(e.firstChild){e.removeChild(e.firstChild);}}
+
+if(D.synthetic){var b=document.getElementById("banner");b.textContent=D.synthetic;b.className="on";document.title="SYNTHETIC - "+document.title;}
+
+var wfIds=Object.keys(D.workflows).sort();
+function chainWf(prId){var n=byId[prId];return n&&n.workflows&&n.workflows[0];}
+function pickInitial(){
+  var hs={};location.hash.replace(/^#/,"").split("&").forEach(function(p){var kv=p.split("=");if(kv[0]){hs[kv[0]]=decodeURIComponent(kv[1]||"");}});
+  var want=D.initial.workflow||hs.wf,prNum=D.initial.pr||hs.pr;
+  var prIds=Object.keys(D.chains).sort();
+  var pr=null;
+  if(prNum){prIds.forEach(function(i){if(String(byId[i].details.number)===String(prNum)&&(!want||chainWf(i)===want||D.workflows[want]&&D.workflows[want].nodes.indexOf(i)>=0)){pr=i;}});}
+  if(!pr&&!want){prIds.forEach(function(i){if(!pr&&D.chains[i].state==="ACCEPTED"){pr=i;}});}
+  S.wf=want||(pr&&chainWf(pr))||wfIds[0]||null;
+  if(!pr&&S.wf){prIds.forEach(function(i){if(!pr&&D.workflows[S.wf].nodes.indexOf(i)>=0&&D.chains[i].state==="ACCEPTED"){pr=i;}});}
+  if(!pr&&S.wf){prIds.forEach(function(i){if(!pr&&D.workflows[S.wf].nodes.indexOf(i)>=0){pr=i;}});}
+  S.pr=pr;if(hs.mode==="workflow"||!pr){S.mode=pr?"workflow":"workflow";}
+  if(hs.mode==="chain"&&pr){S.mode="chain";}
+  if(!hs.mode&&!pr){S.mode="workflow";}
+  if(hs.sel&&byId[hs.sel]){S.sel=hs.sel;S.selKind="node";}
+}
+function fillSelectors(){
+  var sw=document.getElementById("selWf");clear(sw);
+  wfIds.forEach(function(w){var o=h("option",w,"",sw);o.value=w;if(w===S.wf){o.selected=true;}});
+  var sp=document.getElementById("selPr");clear(sp);
+  var any=false;
+  Object.keys(D.chains).sort().forEach(function(i){
+    if(S.wf&&D.workflows[S.wf]&&D.workflows[S.wf].nodes.indexOf(i)<0){return;}
+    any=true;var o=h("option",byId[i].label+"  ["+D.chains[i].state+"]","",sp);o.value=i;if(i===S.pr){o.selected=true;}
+  });
+  if(!any){var o2=h("option","(no pull request in this workflow)","",sp);o2.value="";}
+  document.querySelectorAll("input[name=mode]").forEach(function(r){r.checked=(r.value===S.mode);});
+}
+function drawMetrics(){
+  var box=document.getElementById("metrics");clear(box);
+  var w=D.workflows[S.wf];if(!w){h("div","no workflow","k",box);return;}
+  var names={guarded_decisions:"guarded calls",denial_rate:"denial rate",execution_failure_rate:"execution failure rate",model_usage:"model calls",grant_locks:"grant locks",verified_commits:"verified commits",validated_deliverables:"validated commits",accepted_deliverables:"accepted PRs",verified_upstream_artifacts:"verified upstream",confirmed_downstream_reuse:"downstream reuse"};
+  Object.keys(names).forEach(function(k){
+    var m=w.metrics[k];if(!m){return;}
+    var v=(m.value===null||m.value===undefined)?"n/a":String(m.value);
+    if(m.denominator!==null&&m.denominator!==undefined){v+=" ("+m.numerator+"/"+m.denominator+")";}
+    if(m.unknown){v+="  UNKNOWN "+m.unknown;}
+    var row=h("div","","m",box);h("span",names[k],"",row);h("span",v,"",row);
+    row.title=m.evidence_level+" evidence, "+m.event_count+" event ids. "+(m.note||"");
+  });
+}
+function visibleIds(){
+  var base;
+  if(S.mode==="chain"&&S.pr&&D.chains[S.pr]){base=D.chains[S.pr].nodes.slice();}
+  else if(S.wf&&D.workflows[S.wf]){base=D.workflows[S.wf].nodes.filter(function(i){return byId[i].kind!=="Workflow";});}
+  else{base=[];}
+  var seen={};base.forEach(function(i){seen[i]=1;});
+  Object.keys(S.extra).forEach(function(i){if(!seen[i]&&byId[i]){base.push(i);seen[i]=1;}});
+  return base;
+}
+function layout(ids,vert){
+  var cols={};ids.forEach(function(i){var l=byId[i].layer;(cols[l]=cols[l]||[]).push(i);});
+  var keys=Object.keys(cols).map(Number).sort(function(a,b){return a-b;});
+  var pos={};
+  keys.forEach(function(l,ci){
+    cols[l].sort(function(a,b){var x=byId[a],y=byId[b];return (x.kind+x.label+a)<(y.kind+y.label+b)?-1:1;});
+    cols[l].forEach(function(i,ri){pos[i]=vert?{x:ri*(W+40),y:ci*92}:{x:ci*GX,y:ri*GY};});
+  });
+  return pos;
+}
+var vp;
+function draw(){
+  var svg=document.getElementById("svg");clear(svg);
+  var defs=el("defs",{},svg);
+  ["#3b6ea5","#1f7a4d","#d99100"].forEach(function(c,i){
+    var m=el("marker",{id:"ar"+i,viewBox:"0 0 10 10",refX:"9",refY:"5",markerWidth:"7",markerHeight:"7",orient:"auto-start-reverse"},defs);
+    el("path",{d:"M0,0 L10,5 L0,10 z",fill:c},m);
+  });
+  vp=el("g",{},svg);
+  var ids=visibleIds(),vert=(S.mode==="chain"&&!!S.pr&&!!D.chains[S.pr]&&ids.length<=14),pos=layout(ids,vert),vis={};ids.forEach(function(i){vis[i]=1;});
+  var chain=(S.pr&&D.chains[S.pr])?D.chains[S.pr]:null;
+  var hiN=S.hi?S.hi.nodes:(chain&&S.mode==="workflow"?arrToSet(chain.nodes):null);
+  var hiE=S.hi?S.hi.edges:(chain&&S.mode==="workflow"?arrToSet(chain.edges):null);
+  var chainEdges=(S.mode==="chain"&&chain)?arrToSet(chain.edges):null;
+  var edges=D.edges.filter(function(e){
+    if(!vis[e.from]||!vis[e.to]||e.relation==="PART_OF"){return false;}
+    if(chainEdges&&!chainEdges[e.edge_id]&&!(S.hi&&S.hi.edges[e.edge_id])){return false;}
+    return true;
+  });
+  var showLabels=edges.length<45;
+  var eg=el("g",{},vp),ng=el("g",{},vp);
+  edges.forEach(function(e){
+    var a=pos[e.from],b=pos[e.to];
+    var sx,sy,tx,ty,d,dir=a.x<b.x?1:(a.x>b.x?-1:0);
+    if(vert){
+      var down=a.y<b.y;
+      sx=a.x+W/2;tx=b.x+W/2;sy=down?a.y+H:a.y;ty=down?b.y:b.y+H;
+      var vo=Math.max(24,Math.abs(ty-sy)/2);
+      d="M"+sx+","+sy+" C"+sx+","+(sy+(down?vo:-vo))+" "+tx+","+(ty+(down?-vo:vo))+" "+tx+","+ty;
+    }else{
+      sy=a.y+H/2;ty=b.y+H/2;
+      if(dir>=0){sx=a.x+W;tx=b.x;}else{sx=a.x;tx=b.x+W;}
+      if(dir===0){sx=a.x+W;tx=b.x+W;}
+      var off=dir===0?70:Math.max(40,Math.abs(tx-sx)/2);
+      d="M"+sx+","+sy+" C"+(sx+(dir>=0?off:-off))+","+sy+" "+(tx+(dir>=0?-off:off))+","+ty+" "+tx+","+ty;
+    }
+    var cand=e.candidate;
+    var cls="edge "+(cand?"cand":e.evidence_level);
+    var hi=hiE?hiE[e.edge_id]:(chainEdges?true:false);
+    if(hi){cls+=" hi";}
+    var mk=cand?2:(e.evidence_level==="external"?1:0);
+    var p=el("path",{d:d,"class":cls+((hiE&&!hi)?" dim":""),"marker-end":"url(#ar"+mk+")"},eg);
+    var hit=el("path",{d:d,"class":"hit"},eg);
+    hit.addEventListener("click",function(ev){ev.stopPropagation();select(e.edge_id,"edge");});
+    if(S.sel===e.edge_id&&S.selKind==="edge"){p.setAttribute("stroke-width","4.5");}
+    if(showLabels||hi){var t=el("text",{x:(sx+tx)/2,y:(sy+ty)/2-4,"class":"elabel","text-anchor":"middle"},eg);t.textContent=e.relation+(cand?" (candidate)":"");}
+  });
+  ids.forEach(function(i){
+    var n=byId[i],p=pos[i];
+    var g=el("g",{"class":"node "+n.class+((S.sel===i&&S.selKind==="node")?" sel":"")+((hiN&&!hiN[i])?" dim":""),transform:"translate("+p.x+","+p.y+")"},ng);
+    el("rect",{width:W,height:H,rx:7},g);
+    var t1=el("text",{x:8,y:17},g);t1.textContent=n.label;
+    var t2=el("text",{x:8,y:32,"class":"sub"},g);t2.textContent=n.kind+(n.status?" - "+n.status.split(":")[0].slice(0,26):"");
+    var ti=el("title",{},g);ti.textContent=n.id+"\n"+n.status;
+    g.addEventListener("click",function(ev){ev.stopPropagation();select(i,"node");});
+  });
+  applyTf();
+  document.body.setAttribute("data-rendered",String(ids.length)+"/"+String(edges.length));
+}
+function arrToSet(a){var s={};(a||[]).forEach(function(x){s[x]=true;});return s;}
+function applyTf(){if(vp){vp.setAttribute("transform","translate("+S.tx+","+S.ty+") scale("+S.k+")");}}
+function fit(){
+  var svg=document.getElementById("svg");if(!vp){return;}
+  var bb;try{bb=vp.getBBox();}catch(e){return;}
+  if(!bb.width||!bb.height){return;}
+  var w=svg.clientWidth||800,hh=svg.clientHeight||600;
+  var k=Math.min((w-40)/bb.width,(hh-40)/bb.height,1.6);
+  S.k=k;S.tx=(w-bb.width*k)/2-bb.x*k;S.ty=(hh-bb.height*k)/2-bb.y*k;applyTf();
+}
+function zoom(f,cx,cy){
+  var svg=document.getElementById("svg");cx=cx===undefined?svg.clientWidth/2:cx;cy=cy===undefined?svg.clientHeight/2:cy;
+  var nk=Math.max(0.15,Math.min(4,S.k*f));S.tx=cx-(cx-S.tx)*(nk/S.k);S.ty=cy-(cy-S.ty)*(nk/S.k);S.k=nk;applyTf();
+}
+function kv(box,k,v){if(v===undefined||v===null||v===""){return;}h("div",k,"k",box);h("div",Array.isArray(v)?(v.length?v.join(", "):"none"):String(v),"",box);}
+function select(id,kind){
+  S.sel=id;S.selKind=kind;draw();details();
+}
+function details(){
+  var box=document.getElementById("details");clear(box);
+  if(!S.sel){h("div","Click a node or an edge to see its evidence.","k",box);return;}
+  if(S.selKind==="edge"){
+    var e=eById[S.sel];h("h3",e.relation,"",box);
+    var pl=h("span",e.candidate?"CANDIDATE: not followed as confirmed":"CONFIRMED","pill "+(e.candidate?"warn":"ok"),box);
+    var g=h("div","","kv",box);
+    kv(g,"from",e.from);kv(g,"to",e.to);kv(g,"evidence level",e.evidence_level);kv(g,"confidence",e.confidence);
+    kv(g,"source event",e.source_event_id||"none recorded");kv(g,"observed at",e.observed_at);kv(g,"note",e.note);
+    return;
+  }
+  var n=byId[S.sel];h("h3",n.label,"",box);h("div",n.kind+"  "+n.id,"k ev",box);
+  h("span",n.status||"structural node","pill "+n.class,box);
+  var g2=h("div","","kv",box);
+  kv(g2,"evidence level",n.evidence_level);
+  Object.keys(n.details).forEach(function(k){kv(g2,k,n.details[k]);});
+  h("h2","Supporting events",null,box);
+  h("div",n.event_ids.length?n.event_ids.join("\n"):"none recorded for this node","ev",box).style.whiteSpace="pre-wrap";
+  var tr=D.traces[S.sel];
+  if(n.kind==="Commit"||n.kind==="PullRequest"||n.kind==="Branch"||n.kind==="Issue"){
+    h("h2","Trace",null,box);
+    var bu=h("button","Trace upstream","",box),bd=h("button","Trace downstream","",box),bc=h("button","Clear trace","",box);
+    bu.onclick=function(){trace("up");};bd.onclick=function(){trace("down");};bc.onclick=function(){S.hi=null;S.extra={};draw();fit();};
+    if(!tr){h("div","No lineage edge touches this artifact. Nothing is claimed beyond its own workflow.","k",box);}
+  }
+  var ch=D.chains[S.sel];
+  if(ch){
+    h("h2","Evidence chain: "+ch.state+(ch.complete?"":" (incomplete)"),null,box);
+    h("div",ch.reason,"k",box);
+    ch.links.forEach(function(l){
+      var row=h("div","","m",box);h("span",l.link,"",row);
+      var s=l.id?l.id.split(":").slice(-1)[0].slice(0,18):"MISSING";
+      if(!l.id&&l.not_passing){s="NOT PASSING: "+l.not_passing;}else if(!l.id&&l.pr_state){s="MISSING: "+l.pr_state;}
+      var sp=h("span",s,l.id?"":"miss",row);
+      if(l.source_event_id){sp.title="event "+l.source_event_id+" ("+l.evidence_level+")";}
+    });
+    var bh=h("button","Highlight this chain in the whole workflow","",box);
+    bh.onclick=function(){S.pr=S.sel;S.mode="workflow";S.hi=null;S.extra={};fillSelectors();draw();fit();};
+  }
+}
+function trace(dir){
+  var t=D.traces[S.sel];var nodes={},edges={};nodes[S.sel]=true;
+  if(!t){S.hi={nodes:nodes,edges:edges};draw();return;}
+  (dir==="up"?t.up:t.down).forEach(function(i){nodes[i]=true;});
+  (dir==="up"?t.up_edges:t.down_edges).forEach(function(i){edges[i]=true;});
+  S.extra={};Object.keys(nodes).forEach(function(i){S.extra[i]=true;});
+  t.candidates.forEach(function(ei){var e=eById[ei];if(e){S.extra[e.from]=true;S.extra[e.to]=true;edges[ei]=true;}});
+  S.hi={nodes:nodes,edges:edges};draw();fit();
+}
+document.getElementById("selWf").onchange=function(){S.wf=this.value;S.pr=null;S.hi=null;S.extra={};S.sel=null;
+  Object.keys(D.chains).sort().forEach(function(i){if(!S.pr&&D.workflows[S.wf].nodes.indexOf(i)>=0){S.pr=i;}});
+  if(!S.pr){S.mode="workflow";}fillSelectors();drawMetrics();draw();fit();details();};
+document.getElementById("selPr").onchange=function(){S.pr=this.value||null;S.hi=null;S.extra={};S.sel=S.pr;S.selKind=S.pr?"node":null;draw();fit();details();};
+document.querySelectorAll("input[name=mode]").forEach(function(r){r.onchange=function(){S.mode=this.value;S.hi=null;S.extra={};draw();fit();};});
+document.getElementById("bFit").onclick=fit;
+document.getElementById("bIn").onclick=function(){zoom(1.25);};
+document.getElementById("bOut").onclick=function(){zoom(0.8);};
+var svgEl=document.getElementById("svg"),drag=null;
+svgEl.addEventListener("wheel",function(ev){ev.preventDefault();var r=svgEl.getBoundingClientRect();zoom(ev.deltaY<0?1.12:0.89,ev.clientX-r.left,ev.clientY-r.top);},{passive:false});
+svgEl.addEventListener("mousedown",function(ev){drag={x:ev.clientX,y:ev.clientY,tx:S.tx,ty:S.ty};svgEl.style.cursor="grabbing";});
+window.addEventListener("mousemove",function(ev){if(drag){S.tx=drag.tx+ev.clientX-drag.x;S.ty=drag.ty+ev.clientY-drag.y;applyTf();}});
+window.addEventListener("mouseup",function(){drag=null;svgEl.style.cursor="grab";});
+svgEl.addEventListener("click",function(){if(S.sel){S.sel=null;S.selKind=null;draw();details();}});
+
+pickInitial();fillSelectors();drawMetrics();
+if(S.sel&&!byId[S.sel]){S.sel=null;}
+if(!S.sel&&S.pr&&S.mode==="chain"){S.sel=S.pr;S.selKind="node";}
+draw();fit();details();
+}catch(err){document.body.setAttribute("data-error",String(err&&err.message||err));var m=document.createElement("pre");m.textContent="Viewer error: "+(err&&err.message||err);document.body.appendChild(m);}
+})();
+</script>
+</body>
+</html>
