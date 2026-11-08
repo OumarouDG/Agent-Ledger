@@ -12,13 +12,13 @@
   process and does not get these variables.
 
 .EXAMPLE
-  .\scripts\launch-kiro.ps1
-  .\scripts\launch-kiro.ps1 -Agent agent_coder -GrantId grant_001 -WorkflowId wf_001
+  .\scripts\launch-kiro.ps1 -GrantId gr_xxxxxxxx
+  .\scripts\launch-kiro.ps1 -Agent agent_coder -GrantId gr_xxxxxxxx -WorkflowId wf_001
 #>
 [CmdletBinding()]
 param(
     [string]$Agent = "agent_coder",
-    [string]$GrantId = "grant_001",
+    [string]$GrantId = "",
     [string]$WorkflowId = "wf_001",
     [string]$InstanceId = "i-02d94a2f0bf2a72db",
     [int]$LocalPort = 18000,
@@ -29,6 +29,11 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Workspace) { $Workspace = $root }
+
+# A grant is required. There is no default: create one with 'agentledger grant create' first.
+if (-not $GrantId) {
+    throw "Pass -GrantId <id>. Create one with: agentledger grant create --agent $Agent --workflow $WorkflowId --tools get_issue --repo <owner/name>"
+}
 
 # 1. Kiro must not already be running, or it will ignore the variables set below.
 if (Get-Process -Name "Kiro" -ErrorAction SilentlyContinue) {
