@@ -20,12 +20,18 @@ from controlplane.auth.config import load_config
 from controlplane.grants.errors import GrantNotFound, GrantRefused
 from gateway.authorization import MAX_PARENT_DEPTH
 from gateway.grants import Grant, GrantStoreError
+from gateway.llm import DEFAULT_MAX_TOKENS, HARD_MAX_TOKENS
 
 MAX_TTL_SECONDS = 4 * 3600  # GUESS: demo cap on how far out a grant may expire
 ROOT_ROLES = frozenset({"engineer", "security-admin"})  # GUESS: confirm with Oumarou
 REVOKE_ANY_ROLE = "security-admin"  # GUESS: may revoke any grant; others only their own
 # GitHub-shaped owner/name: owner 1-39 alnum or hyphen, name 1-100 of alnum . _ -
 _REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
+# Branch names the gateway accepts (gateway.github.valid_branch) and a prefix that ends in a slash.
+_BRANCH = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
+_PREFIX = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/$")
+_MODEL = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
+MAX_MODELS = 10
 
 
 class HumanPrincipal(Protocol):
@@ -60,6 +66,12 @@ class GrantRequest:
     delegable_tools: frozenset[str] = frozenset()
     parent_grant_id: str | None = None  # None = root grant from a human
     human_id: str | None = None  # child only, and must equal the parent's; root takes the session's
+    # Limits the gateway's tools read from the grant's resources. All optional; a grant without them can
+    # only use tools that need none (get_issue). A child may never widen its parent's.
+    branch_prefix: str | None = None  # agent branches must start with this; ends with '/'
+    base_branch: str | None = None  # branch pull requests and new branches start from
+    models: frozenset[str] = frozenset()  # Bedrock model ids llm_converse may use
+    max_tokens: int | None = None  # cap on one model reply
 
 
 @dataclass(frozen=True)
@@ -107,6 +119,7 @@ def check_request(req: GrantRequest, *, human: HumanPrincipal | None,
         raise GrantRefused("unknown_agent", f"{req.agent_id!r} is not registered in shared/cognito.json")
     if not isinstance(req.repository, str) or not _REPO.match(req.repository):
         raise GrantRefused("bad_repository", "repository must look like owner/name")
+    _check_limits(req)
     exp = req.expires_at
     if not isinstance(exp, int) or isinstance(exp, bool) or exp <= now or exp > now + MAX_TTL_SECONDS:
         raise GrantRefused("bad_expiry", f"expires_at must be in the future and at most "
@@ -117,6 +130,48 @@ def check_request(req: GrantRequest, *, human: HumanPrincipal | None,
         return _check_root(req, human)
     return _check_child(req, delegator_agent_id, chain, now)
 
+
+def _clean_segments(name: str) -> bool:
+    """No '.' or '..' part, and no part ending in '.lock' (GitHub refuses those)."""
+    parts = [x for x in name.split("/") if x != ""]  # a trailing slash leaves one empty part
+    return bool(parts) and all(x not in (".", "..") and not x.endswith(".lock") for x in parts)
+
+
+def _check_limits(req: GrantRequest) -> None:
+    """Shape of the optional limits. Nothing is trimmed or defaulted: a bad value is refused."""
+    p = req.branch_prefix
+    if p is not None and not (isinstance(p, str) and _PREFIX.match(p) and _clean_segments(p)):
+        raise GrantRefused("bad_branch_prefix", "branch_prefix must look like agentledger/wf_001/ (ends with /)")
+    b = req.base_branch
+    if b is not None and not (isinstance(b, str) and _BRANCH.match(b) and _clean_segments(b) and len(b) <= 100):
+        raise GrantRefused("bad_base_branch", "base_branch is not a valid branch name")
+    m = req.models
+    if not isinstance(m, frozenset) or len(m) > MAX_MODELS or not all(
+            isinstance(x, str) and _MODEL.match(x) for x in m):
+        raise GrantRefused("bad_models", f"models must be at most {MAX_MODELS} model ids")
+    t = req.max_tokens
+    if t is not None and (not isinstance(t, int) or isinstance(t, bool) or not 1 <= t <= HARD_MAX_TOKENS):
+        raise GrantRefused("bad_max_tokens", f"max_tokens must be a whole number from 1 to {HARD_MAX_TOKENS}")
+
+
+def _check_child_limits(req: GrantRequest, parent: Grant) -> None:
+    """A child's limits must sit inside the parent's. Asking for more is refused, not trimmed."""
+    pres = parent.resources
+    pp = pres.get("branch_prefix")
+    if req.branch_prefix is not None and not (isinstance(pp, str) and req.branch_prefix.startswith(pp)):
+        raise GrantRefused("resource_escalation", "child branch_prefix must sit inside the parent's branch_prefix")
+    pb = pres.get("base_branch")
+    if req.base_branch is not None and req.base_branch != pb:
+        raise GrantRefused("resource_escalation", "child may not choose a different base_branch than its parent")
+    allowed = set(pres.get("models") or ())
+    extra = req.models - allowed
+    if extra:
+        raise GrantRefused("resource_escalation", f"models not in the parent's: {', '.join(sorted(extra))}")
+    if req.max_tokens is not None:
+        pt = pres.get("max_tokens")
+        cap = int(pt) if pt is not None else DEFAULT_MAX_TOKENS  # no parent value = the gateway default
+        if req.max_tokens > cap:
+            raise GrantRefused("resource_escalation", f"child max_tokens may not exceed the parent's ({cap})")
 
 def _check_root(req: GrantRequest, human: HumanPrincipal | None) -> str:
     username = getattr(human, "username", None)
@@ -154,6 +209,7 @@ def _check_child(req: GrantRequest, delegator_agent_id: str | None, chain: Chain
                                f"{name} not in parent's delegable_tools: {', '.join(sorted(extra))}")
     if req.repository != parent.resources.get("repository"):
         raise GrantRefused("resource_escalation", "child must use the parent's repository")
+    _check_child_limits(req, parent)
     if parent.expires_at is not None and req.expires_at > parent.expires_at:
         raise GrantRefused("expiry_escalation", "child may not outlive its parent")
     return parent.human_id  # type: ignore[return-value]
@@ -180,6 +236,19 @@ def load_chain(store: GrantWriter, parent_grant_id: str) -> Chain:
     return Chain(tuple(grants))
 
 
+def _resources_of(req: GrantRequest) -> dict:
+    """What gets stored. Only limits that were asked for are written."""
+    r: dict = {"repository": req.repository}
+    if req.branch_prefix is not None:
+        r["branch_prefix"] = req.branch_prefix
+    if req.base_branch is not None:
+        r["base_branch"] = req.base_branch
+    if req.models:
+        r["models"] = sorted(req.models)
+    if req.max_tokens is not None:
+        r["max_tokens"] = req.max_tokens
+    return r
+
 def create_grant(req: GrantRequest, *, store: GrantWriter, human: HumanPrincipal | None = None,
                  delegator_agent_id: str | None = None, agents: frozenset[str] | None = None,
                  now: float | None = None) -> Grant:
@@ -202,7 +271,7 @@ def create_grant(req: GrantRequest, *, store: GrantWriter, human: HumanPrincipal
         parent_grant_id=req.parent_grant_id,
         tools=req.tools,
         delegable_tools=req.delegable_tools,
-        resources={"repository": req.repository},
+        resources=_resources_of(req),
     )
     created_by = human.username if req.parent_grant_id is None else delegator_agent_id  # type: ignore[union-attr]
     store.put_new(grant, created_at=int(now), created_by=created_by)  # type: ignore[arg-type]

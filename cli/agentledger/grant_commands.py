@@ -91,6 +91,10 @@ def _show(g) -> None:
         ("workflow", g.workflow_id),
         ("human", g.human_id or "(none)"),
         ("repository", g.resources.get("repository", "(none)")),
+        ("branch_prefix", g.resources.get("branch_prefix", "(none)")),
+        ("base_branch", g.resources.get("base_branch", "main (default)")),
+        ("models", ", ".join(g.resources.get("models") or ()) or "(none)"),
+        ("max_tokens", str(g.resources.get("max_tokens", "default"))),
         ("tools", _names(g.tools)),
         ("delegable_tools", _names(g.delegable_tools)),
         ("parent", g.parent_grant_id or "(root)"),
@@ -112,8 +116,15 @@ def grant() -> None:
 @click.option("--delegable", multiple=True, help="Tools it may hand on to other agents. Never implies execute.")
 @click.option("--repo", "repository", required=True, help="Repository owner/name the grant is scoped to.")
 @click.option("--ttl", default="60m", show_default=True, help="Lifetime: 30m, 2h (at most 4h).")
+@click.option("--branch-prefix", default=None,
+              help="Branches the agent may write must start with this, e.g. agentledger/wf_001/ (ends with /).")
+@click.option("--base-branch", default=None, help="Branch new branches and pull requests start from (default main).")
+@click.option("--model", "models", multiple=True,
+              help="Bedrock model id llm_converse may use; repeat for several. The first is the default.")
+@click.option("--max-tokens", type=int, default=None, help="Cap on one model reply (1 to 2000).")
 def create(agent_id: str, workflow_id: str, tools: tuple[str, ...], delegable: tuple[str, ...],
-           repository: str, ttl: str) -> None:
+           repository: str, ttl: str, branch_prefix: str | None, base_branch: str | None,
+           models: tuple[str, ...], max_tokens: int | None) -> None:
     from controlplane.grants.service import GrantRequest, create_grant
 
     seconds = parse_ttl(ttl)
@@ -121,7 +132,8 @@ def create(agent_id: str, workflow_id: str, tools: tuple[str, ...], delegable: t
     now = time.time()
     req = GrantRequest(agent_id=agent_id, workflow_id=workflow_id, tools=_tool_set(tools),
                        delegable_tools=_tool_set(delegable), expires_at=int(now) + seconds,
-                       repository=repository)
+                       repository=repository, branch_prefix=branch_prefix, base_branch=base_branch,
+                       models=_tool_set(models), max_tokens=max_tokens)
     g = _run(lambda: create_grant(req, store=_store(), human=human, now=now))
     click.echo(f"Created grant {g.grant_id} for {g.agent_id} on behalf of {g.human_id}")
     _show(g)

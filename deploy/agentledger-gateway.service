@@ -12,6 +12,9 @@ User=ssm-user
 WorkingDirectory=/home/ssm-user/Agent-Ledger
 # Run as a module so `controlplane` and `gateway` import from the repo root.
 ExecStart=/home/ssm-user/Agent-Ledger/.venv/bin/python -m gateway.server
+# Grants come from DynamoDB (table agentledger-grants, us-east-1). If the store cannot load, the
+# gateway refuses to start. Needs boto3 >= 1.43.126 in the venv (requirements.txt).
+Environment=AGENTLEDGER_GRANT_STORE=dynamodb
 Restart=on-failure
 RestartSec=5
 # The gateway binds 127.0.0.1:8000 itself. Reach it through a tunnel or reverse proxy.
