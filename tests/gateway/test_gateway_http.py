@@ -27,7 +27,7 @@ class FakeJwksVerifier(Verifier):
     """Real Verifier checks; only the JWKS lookup is replaced by the local public key."""
 
     def __init__(self):
-        super().__init__(issuer=ISS, jwks_url="unused")
+        super().__init__(issuer=ISS, jwks_url="https://example.invalid/jwks.json")
         self.lookup_threads: list[str] = []
         self.fail_with: Exception | None = None
 
