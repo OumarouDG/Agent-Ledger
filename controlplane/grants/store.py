@@ -3,6 +3,9 @@
 `DynamoGrantStore.get` reads one grant with a strongly consistent read and no cache, so a
 revoke applies to the next call. Every failure to read or parse an item raises
 `GrantStoreError`; `None` means only that the item does not exist.
+
+Writes are conditional: `put_new` never overwrites an existing grant and `mark_revoked`
+never creates one. Nothing here deletes a grant; the gateway's parent walk needs them.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
-from boto3.dynamodb.types import TypeDeserializer
+from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
 from botocore.exceptions import BotoCoreError, ClientError
 
 from controlplane.auth.config import load_config
@@ -36,10 +39,24 @@ _FIXES = {
 }
 
 _deserializer = TypeDeserializer()
+_serializer = TypeSerializer()
 
 
 def _region() -> str:
     return load_config()["region"]
+
+
+def _code(e: ClientError) -> str:
+    return e.response.get("Error", {}).get("Code", "ClientError")
+
+
+def _store_error(e: Exception) -> GrantStoreError:
+    if isinstance(e, ClientError):
+        code = _code(e)
+        hint = _FIXES.get(code, "check AWS credentials and the table name")
+        return GrantStoreError(f"grant store unavailable ({code}): {hint}")
+    return GrantStoreError(f"grant store unavailable ({type(e).__name__}): can't reach AWS; "
+                           "check network and credentials")
 
 
 class DynamoGrantStore:
@@ -60,18 +77,74 @@ class DynamoGrantStore:
                 Key={"grant_id": {"S": grant_id}},
                 ConsistentRead=True,
             )
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code", "ClientError")
-            hint = _FIXES.get(code, "check AWS credentials and the table name")
-            raise GrantStoreError(f"grant store unavailable ({code}): {hint}") from e
-        except BotoCoreError as e:
-            raise GrantStoreError(
-                f"grant store unavailable ({type(e).__name__}): can't reach AWS; "
-                "check network and credentials") from e
+        except (ClientError, BotoCoreError) as e:
+            raise _store_error(e) from e
         item = resp.get("Item")
         if item is None:
             return None
         return item_to_grant(item, grant_id)
+
+    def put_new(self, grant: Grant, *, created_at: int, created_by: str) -> None:
+        """Write a new grant. Refuses (GrantStoreError) if the grant_id already exists."""
+        try:
+            self._client.put_item(
+                TableName=self.table_name,
+                Item=grant_to_item(grant, created_at=created_at, created_by=created_by),
+                ConditionExpression="attribute_not_exists(grant_id)",
+            )
+        except ClientError as e:
+            if _code(e) == "ConditionalCheckFailedException":
+                raise GrantStoreError(f"grant {grant.grant_id} already exists; not overwritten") from e
+            raise _store_error(e) from e
+        except BotoCoreError as e:
+            raise _store_error(e) from e
+
+    def mark_revoked(self, grant_id: str, *, revoked_at: int, revoked_by: str) -> bool:
+        """Set status=revoked. True if this call revoked it; False if the grant is missing
+        or already revoked (the caller re-reads to tell which). Never creates an item."""
+        try:
+            self._client.update_item(
+                TableName=self.table_name,
+                Key={"grant_id": {"S": grant_id}},
+                UpdateExpression="SET #s = :revoked, revoked_at = :at, revoked_by = :by",
+                ConditionExpression="attribute_exists(grant_id) AND #s <> :revoked",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":revoked": {"S": "revoked"},
+                    ":at": {"N": str(int(revoked_at))},
+                    ":by": {"S": revoked_by},
+                },
+            )
+        except ClientError as e:
+            if _code(e) == "ConditionalCheckFailedException":
+                return False
+            raise _store_error(e) from e
+        except BotoCoreError as e:
+            raise _store_error(e) from e
+        return True
+
+
+def grant_to_item(grant: Grant, *, created_at: int, created_by: str) -> dict[str, Any]:
+    """Raw DynamoDB item for a grant. Tool names are lists (L): DynamoDB rejects empty sets."""
+    if not isinstance(grant.expires_at, int) or isinstance(grant.expires_at, bool):
+        raise ValueError("grant.expires_at must be an int")
+    raw: dict[str, Any] = {
+        "grant_id": grant.grant_id,
+        "agent_id": grant.agent_id,
+        "workflow_id": grant.workflow_id,
+        "status": grant.status,
+        "expires_at": grant.expires_at,
+        "tools": sorted(grant.tools),
+        "delegable_tools": sorted(grant.delegable_tools),
+        "resources": dict(grant.resources),
+        "created_at": int(created_at),
+        "created_by": created_by,
+    }
+    if grant.human_id is not None:
+        raw["human_id"] = grant.human_id
+    if grant.parent_grant_id is not None:
+        raw["parent_grant_id"] = grant.parent_grant_id
+    return {k: _serializer.serialize(v) for k, v in raw.items()}
 
 
 def item_to_grant(item: dict[str, Any], grant_id: str) -> Grant:

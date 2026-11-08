@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from botocore.exceptions import EndpointConnectionError
 
-from controlplane.grants.store import DynamoGrantStore, TABLE_NAME, store_from_env
+from controlplane.grants.store import (
+    TABLE_NAME, DynamoGrantStore, grant_to_item, item_to_grant, store_from_env,
+)
 from gateway.grants import Grant, GrantStoreError, JsonFileGrantStore
 from tests.unit.grants.stubs import FUTURE, TABLE, expect_get, item, stubbed_client
 
@@ -150,6 +154,84 @@ def test_malformed_item_gives_store_error(stub, overrides, why):
     with pytest.raises(GrantStoreError, match="malformed") as e:
         store.get("gr_test1")
     assert why in str(e.value)
+
+
+# --- conditional writes -------------------------------------------------------
+
+GRANT = Grant(grant_id="gr_w1", agent_id="agent_coder", workflow_id="wf_test", human_id="alice",
+              expires_at=FUTURE, parent_grant_id="gr_root", tools=frozenset({"get_issue", "commit_file"}),
+              delegable_tools=frozenset(), resources={"repository": "acme/demo"})
+
+
+def test_grant_to_item_round_trips_and_uses_lists():
+    raw = grant_to_item(GRANT, created_at=1, created_by="agent_lead")
+    assert raw["tools"] == {"L": [{"S": "commit_file"}, {"S": "get_issue"}]}
+    assert raw["delegable_tools"] == {"L": []}  # an empty string set would be rejected by DynamoDB
+    assert raw["expires_at"] == {"N": str(FUTURE)}
+    assert (raw["created_by"], raw["created_at"]) == ({"S": "agent_lead"}, {"N": "1"})
+    assert item_to_grant(raw, "gr_w1") == GRANT
+
+
+def test_grant_to_item_omits_absent_optional_fields():
+    raw = grant_to_item(replace(GRANT, human_id=None, parent_grant_id=None), created_at=1, created_by="x")
+    assert "human_id" not in raw and "parent_grant_id" not in raw
+
+
+def test_grant_to_item_refuses_non_int_expiry():
+    with pytest.raises(ValueError):
+        grant_to_item(replace(GRANT, expires_at=None), created_at=1, created_by="x")
+
+
+def test_put_new_is_conditional(stub):
+    store, stubber = stub
+    stubber.add_response("put_item", {}, {
+        "TableName": TABLE,
+        "Item": grant_to_item(GRANT, created_at=5, created_by="agent_lead"),
+        "ConditionExpression": "attribute_not_exists(grant_id)",
+    })
+    store.put_new(GRANT, created_at=5, created_by="agent_lead")
+
+
+def test_put_new_existing_id_is_an_error_not_an_overwrite(stub):
+    store, stubber = stub
+    stubber.add_client_error("put_item", service_error_code="ConditionalCheckFailedException",
+                             http_status_code=400)
+    with pytest.raises(GrantStoreError, match="already exists"):
+        store.put_new(GRANT, created_at=5, created_by="agent_lead")
+
+
+def test_put_new_access_denied_is_store_error(stub):
+    store, stubber = stub
+    stubber.add_client_error("put_item", service_error_code="AccessDeniedException", http_status_code=400)
+    with pytest.raises(GrantStoreError, match="AccessDeniedException"):
+        store.put_new(GRANT, created_at=5, created_by="agent_lead")
+
+
+def test_mark_revoked_is_conditional(stub):
+    store, stubber = stub
+    stubber.add_response("update_item", {}, {
+        "TableName": TABLE,
+        "Key": {"grant_id": {"S": "gr_w1"}},
+        "UpdateExpression": "SET #s = :revoked, revoked_at = :at, revoked_by = :by",
+        "ConditionExpression": "attribute_exists(grant_id) AND #s <> :revoked",
+        "ExpressionAttributeNames": {"#s": "status"},
+        "ExpressionAttributeValues": {":revoked": {"S": "revoked"}, ":at": {"N": "7"}, ":by": {"S": "alice"}},
+    })
+    assert store.mark_revoked("gr_w1", revoked_at=7, revoked_by="alice") is True
+
+
+def test_mark_revoked_condition_failed_returns_false(stub):
+    store, stubber = stub
+    stubber.add_client_error("update_item", service_error_code="ConditionalCheckFailedException",
+                             http_status_code=400)
+    assert store.mark_revoked("gr_w1", revoked_at=7, revoked_by="alice") is False
+
+
+def test_mark_revoked_throttled_is_store_error(stub):
+    store, stubber = stub
+    stubber.add_client_error("update_item", service_error_code="ThrottlingException", http_status_code=400)
+    with pytest.raises(GrantStoreError, match="ThrottlingException"):
+        store.mark_revoked("gr_w1", revoked_at=7, revoked_by="alice")
 
 
 # --- store_from_env -----------------------------------------------------------
