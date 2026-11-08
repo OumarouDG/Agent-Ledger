@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from . import __version__, commands
+from . import __version__, commands, grant_commands
 
 
 @click.group(help="AgentLedger: sign in as a human; agents act under your delegation grant.")
@@ -15,3 +15,4 @@ def cli() -> None:
 
 for _cmd in commands.ALL:
     cli.add_command(_cmd)
+cli.add_command(grant_commands.grant)

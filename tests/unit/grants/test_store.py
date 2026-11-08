@@ -234,6 +234,40 @@ def test_mark_revoked_throttled_is_store_error(stub):
         store.mark_revoked("gr_w1", revoked_at=7, revoked_by="alice")
 
 
+# --- list reads ---------------------------------------------------------------
+
+def test_by_workflow_queries_the_index_across_pages(stub):
+    store, stubber = stub
+    q = {"TableName": TABLE, "IndexName": "workflow_id-index", "KeyConditionExpression": "workflow_id = :w",
+         "ExpressionAttributeValues": {":w": {"S": "wf_test"}}}
+    stubber.add_response("query", {"Items": [item("gr_a")], "LastEvaluatedKey": {"grant_id": {"S": "gr_a"}}}, q)
+    stubber.add_response("query", {"Items": [item("gr_b")]}, {**q, "ExclusiveStartKey": {"grant_id": {"S": "gr_a"}}})
+    assert [g.grant_id for g in store.by_workflow("wf_test")] == ["gr_a", "gr_b"]
+
+
+def test_all_scans_consistently(stub):
+    store, stubber = stub
+    stubber.add_response("scan", {"Items": [item("gr_a"), item("gr_b")]},
+                         {"TableName": TABLE, "ConsistentRead": True})
+    assert {g.grant_id for g in store.all()} == {"gr_a", "gr_b"}
+
+
+def test_list_read_error_is_store_error(stub):
+    store, stubber = stub
+    stubber.add_client_error("scan", service_error_code="AccessDeniedException", http_status_code=400)
+    with pytest.raises(GrantStoreError, match="AccessDeniedException"):
+        store.all()
+
+
+def test_malformed_row_in_list_is_store_error_not_skipped(stub):
+    # Bad case: a bad row silently dropped, so `grant list` hides a live grant.
+    store, stubber = stub
+    stubber.add_response("scan", {"Items": [item("gr_a"), item("gr_b", tools={"S": "x"})]},
+                         {"TableName": TABLE, "ConsistentRead": True})
+    with pytest.raises(GrantStoreError, match="gr_b is malformed"):
+        store.all()
+
+
 # --- store_from_env -----------------------------------------------------------
 
 @pytest.fixture

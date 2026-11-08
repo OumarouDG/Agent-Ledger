@@ -123,6 +123,28 @@ class DynamoGrantStore:
             raise _store_error(e) from e
         return True
 
+    def by_workflow(self, workflow_id: str) -> list[Grant]:
+        """All grants in one workflow, via the GSI. GSI reads are eventually consistent,
+        so a revoke made a moment ago may not show yet; `get` is the consistent read."""
+        return self._read_all("query", IndexName=WORKFLOW_INDEX,
+                              KeyConditionExpression="workflow_id = :w",
+                              ExpressionAttributeValues={":w": {"S": workflow_id}})
+
+    def all(self) -> list[Grant]:
+        """Every grant in the table (a scan). Fine for a demo-sized table."""
+        return self._read_all("scan", ConsistentRead=True)
+
+    def _read_all(self, op: str, **kw: Any) -> list[Grant]:
+        out: list[Grant] = []
+        try:
+            for page in self._client.get_paginator(op).paginate(TableName=self.table_name, **kw):
+                for item in page.get("Items", []):
+                    gid = item.get("grant_id", {}).get("S", "<no grant_id>")
+                    out.append(item_to_grant(item, gid))
+        except (ClientError, BotoCoreError) as e:
+            raise _store_error(e) from e
+        return out
+
 
 def grant_to_item(grant: Grant, *, created_at: int, created_by: str) -> dict[str, Any]:
     """Raw DynamoDB item for a grant. Tool names are lists (L): DynamoDB rejects empty sets."""

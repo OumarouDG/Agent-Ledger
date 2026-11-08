@@ -44,6 +44,12 @@ class GrantWriter(Protocol):
     def mark_revoked(self, grant_id: str, *, revoked_at: int, revoked_by: str) -> bool: ...
 
 
+class GrantReader(Protocol):
+    def get(self, grant_id: str) -> Grant | None: ...
+    def by_workflow(self, workflow_id: str) -> list[Grant]: ...
+    def all(self) -> list[Grant]: ...
+
+
 @dataclass(frozen=True)
 class GrantRequest:
     agent_id: str
@@ -230,6 +236,41 @@ def revoke_grant(grant_id: str, *, store: GrantWriter, human: HumanPrincipal | N
     if after.status == "revoked":
         return _already(grant_id)
     raise GrantStoreError(f"revoke of {grant_id} was refused by the store but the grant is {after.status}")
+
+
+def _signed_in(human: HumanPrincipal | None, action: str) -> str:
+    username = getattr(human, "username", None)
+    if not isinstance(username, str) or not username:
+        raise GrantRefused("no_human", f"{action} needs a signed-in human; run agentledger login")
+    return username
+
+
+def _sees_all(human: HumanPrincipal) -> bool:
+    # GUESS: same rule as revoke: security-admin sees every grant, others only their own.
+    return REVOKE_ANY_ROLE in set(getattr(human, "groups", None) or ())
+
+
+def show_grant(grant_id: str, *, store: GrantReader, human: HumanPrincipal | None) -> Grant:
+    """One grant by ID (consistent read). Another human's grant is refused unless security-admin."""
+    username = _signed_in(human, "showing a grant")
+    if not isinstance(grant_id, str) or not grant_id:
+        raise GrantNotFound(str(grant_id))
+    g = store.get(grant_id)
+    if g is None:
+        raise GrantNotFound(grant_id)
+    if not _sees_all(human) and g.human_id != username:  # type: ignore[arg-type]
+        raise GrantRefused("not_permitted", f"{grant_id} belongs to another human")
+    return g
+
+
+def list_grants(*, store: GrantReader, human: HumanPrincipal | None,
+                workflow_id: str | None = None) -> list[Grant]:
+    """Your grants (all grants for security-admin), optionally one workflow, sorted by expiry."""
+    username = _signed_in(human, "listing grants")
+    rows = store.by_workflow(workflow_id) if workflow_id else store.all()
+    if not _sees_all(human):  # type: ignore[arg-type]
+        rows = [g for g in rows if g.human_id == username]
+    return sorted(rows, key=lambda g: (g.expires_at or 0, g.grant_id))
 
 
 def _already(grant_id: str) -> RevokeResult:
