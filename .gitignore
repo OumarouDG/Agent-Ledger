@@ -18,3 +18,7 @@ dist/
 cli/bin/
 
 .DS_Store
+
+# Gateway dev files (local grants and audit trail)
+gateway-grants.json
+gateway-audit.jsonl
