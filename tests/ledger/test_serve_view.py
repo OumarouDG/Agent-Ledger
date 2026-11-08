@@ -42,12 +42,17 @@ def test_serves_a_fresh_page_on_loopback_only(tmp_path):
         assert get(srv, host="evil.example")[0] == 403
         assert get(srv, host="127.0.0.1:18001")[0] == 200  # the browser's port behind a tunnel
         assert get(srv, host="localhost:18001")[0] == 200
-        for bad in ("127.0.0.1.evil.com:8001", "evil.com:127", "127.0.0.1:abc", ""):
+        for bad in ("127.0.0.1.evil.com:8001", "evil.com:127", "127.0.0.1:abc"):
             assert get(srv, host=bad)[0] == 403, bad
         audit.write_text("\n".join(json.dumps(e) for e in accepted_workflow("wf_b", "b", 8)), encoding="utf-8")
         assert "wf_b" in get(srv)[1]  # re-read on every load
     finally:
         srv.shutdown()
+
+
+def test_host_ok_rejects_a_missing_host():
+    assert not sv.host_ok(None) and not sv.host_ok("")
+    assert sv.host_ok("127.0.0.1") and sv.host_ok("localhost:18001")
 
 
 def test_unreadable_audit_is_a_clean_500_without_details(tmp_path):
