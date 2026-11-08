@@ -45,7 +45,11 @@ Kiro expands `${VAR}` from your environment, so no token is stored in the file. 
 ## Tools
 
 - `agentledger_whoami`, `agentledger_ping`: need a valid agent token only.
-- `get_issue`: grant-protected. Development mock that returns issue #42 only; no GitHub call.
+- `get_issue`: grant-protected. Reads the issue from the repository named in the grant's `resources.repository`; the agent cannot choose the repo. With the GitHub App settings below it calls GitHub. Without them it is a development mock that returns issue #42 only.
+
+## GitHub App
+
+Set these on the gateway process: `AGENTLEDGER_GITHUB_APP_ID`, `AGENTLEDGER_GITHUB_INSTALLATION_ID`, `AGENTLEDGER_GITHUB_KEY_SECRET` (AWS Secrets Manager secret id holding the App private key PEM). The key is read from Secrets Manager and never written to disk or returned to agents. The instance role needs `secretsmanager:GetSecretValue` on that one secret. A grant must carry `resources.repository` (`owner/name`) or the call is denied with `resource_not_in_grant`.
 
 ## Grant authorization
 
