@@ -1,0 +1,32 @@
+{
+  "widgets": [
+    {
+      "type": "log", "x": 0, "y": 0, "width": 24, "height": 8,
+      "properties": {
+        "title": "Timeline (newest first)", "region": "us-east-1", "view": "table",
+        "query": "SOURCE '/agentledger/gateway-audit' | fields @timestamp, event, tool, decision, reason, status, agent_id, grant_id | sort @timestamp desc | limit 50"
+      }
+    },
+    {
+      "type": "log", "x": 0, "y": 8, "width": 12, "height": 6,
+      "properties": {
+        "title": "Denials by reason", "region": "us-east-1", "view": "bar",
+        "query": "SOURCE '/agentledger/gateway-audit' | filter event = 'decision' and decision = 'deny' | stats count(*) as n by reason"
+      }
+    },
+    {
+      "type": "log", "x": 12, "y": 8, "width": 12, "height": 6,
+      "properties": {
+        "title": "Sentinel locks", "region": "us-east-1", "view": "table",
+        "query": "SOURCE '/agentledger/gateway-audit' | fields @timestamp, grant_id, agent_id, reason | filter event = 'sentinel' | sort @timestamp desc"
+      }
+    },
+    {
+      "type": "log", "x": 0, "y": 14, "width": 24, "height": 6,
+      "properties": {
+        "title": "Succeeded changes", "region": "us-east-1", "view": "table",
+        "query": "SOURCE '/agentledger/gateway-audit' | fields @timestamp, tool, artifact.kind, artifact.sha, artifact.number | filter event = 'outcome' and status = 'succeeded' | sort @timestamp asc"
+      }
+    }
+  ]
+}
