@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import jwt
 import requests
 
 from controlplane.auth.config import load_config
@@ -44,8 +45,25 @@ class InvalidSession(SessionError):
         self.reason = reason
 
 
+class VerifierUnavailable(SessionError):
+    """The pool's JWKS could not be fetched, so the session was not checked. Still refused."""
+
+
 class RevokeFailed(Exception):
     pass
+
+
+def jwks_unreachable(e: AuthError) -> bool:
+    """True when `unknown_signing_key` was caused by a failed JWKS fetch, not by an unknown key.
+
+    controlplane's Verifier maps both to the same reason; the cause tells them apart.
+    """
+    return e.reason == "unknown_signing_key" and isinstance(e.__cause__, jwt.PyJWKClientConnectionError)
+
+
+def jwks_unreachable_text(verifier: Any, e: AuthError) -> str:
+    url = getattr(verifier, "jwks_url", "the pool's JWKS URL")
+    return f"can't reach the pool's signing keys at {url} ({type(e.__cause__).__name__})."
 
 
 @dataclass(frozen=True)
@@ -130,6 +148,7 @@ def current_session(
         claims = verifier.verify_human(bundle["id_token"], client_id)
         return _session(claims, bundle, refreshed=False)
     except AuthError as e:
+        _raise_unavailable(verifier, e)
         if e.reason != "token_expired":
             raise InvalidSession(e.reason) from None
 
@@ -139,6 +158,7 @@ def current_session(
     try:
         claims = verifier.verify_human(new["id_token"], client_id)
     except AuthError as e:
+        _raise_unavailable(verifier, e)
         raise InvalidSession(f"refreshed token: {e.reason}") from None
     # With refresh token rotation Cognito returns a new refresh token; otherwise keep the old one.
     saved = {"id_token": new["id_token"], "access_token": new["access_token"],
@@ -148,6 +168,12 @@ def current_session(
     except StorageError as e:
         raise SessionError(f"Session refreshed but could not be saved: {e}") from None
     return _session(claims, saved, refreshed=True)
+
+
+def _raise_unavailable(verifier: Any, e: AuthError) -> None:
+    if jwks_unreachable(e):
+        raise VerifierUnavailable(f"Session not checked: {jwks_unreachable_text(verifier, e)} "
+                                  "Check the network and try again.") from None
 
 
 def _config() -> dict:

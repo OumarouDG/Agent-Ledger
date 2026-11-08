@@ -80,6 +80,7 @@ def status_lines() -> list[str]:
     """Never raises. Verifies the stored ID token but does not refresh it."""
     from controlplane.auth.jwt_verify import AuthError
 
+    from .session import jwks_unreachable, jwks_unreachable_text
     from .storage import StorageError
 
     try:
@@ -96,6 +97,9 @@ def status_lines() -> list[str]:
     except StorageError as e:
         return [str(e)] + where
     except AuthError as e:
+        if jwks_unreachable(e):
+            return [f"Status unknown: {jwks_unreachable_text(verifier, e)} Session not checked; "
+                    "check the network."] + where
         if e.reason == "token_expired":
             hint = ("agentledger whoami refreshes it, or run agentledger login" if bundle.get("refresh_token")
                     else "run agentledger login")

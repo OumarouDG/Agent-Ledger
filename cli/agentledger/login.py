@@ -12,8 +12,11 @@ fakes for the config, socket server, threads, clock and verifier.
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import secrets
+import socket
+import sys
 import threading
 import time
 import urllib.parse
@@ -27,13 +30,32 @@ import requests
 from controlplane.auth.config import load_config as _load_config
 from controlplane.auth.jwt_verify import AuthError, Verifier
 
+from .session import jwks_unreachable, jwks_unreachable_text
+
 TIMEOUT_S = 120
 POLL_S = 0.2
+MAX_CALLBACK_REQUESTS = 10
 DEFAULT_RETRY_HINT = "agentledger login"
 
 
 class LoginError(Exception):
     """Sign-in did not complete. The message is safe to print."""
+
+
+class CallbackServer(HTTPServer):
+    """HTTPServer for the redirect that refuses to share its port.
+
+    HTTPServer sets SO_REUSEADDR. On Windows that lets a second process bind the same
+    port, so two logins both listen and the redirect lands in either one. Windows gets
+    SO_EXCLUSIVEADDRUSE instead; elsewhere SO_REUSEADDR does not allow that and is kept.
+    """
+
+    if sys.platform == "win32":
+        allow_reuse_address = False
+
+        def server_bind(self) -> None:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            super().server_bind()
 
 
 @dataclass
@@ -50,17 +72,42 @@ class LoginResult:
         return list(self.claims.get("cognito:groups", []))
 
 
-def make_handler(result: dict) -> type[BaseHTTPRequestHandler]:
-    """Callback handler that copies the redirect's query parameters into `result`."""
+def _printable(text: str, limit: int = 100) -> str:
+    """Drop control characters (terminal escapes) from redirect text before it is shown anywhere."""
+    return "".join(c for c in text if c.isprintable())[:limit]
+
+
+def make_handler(result: dict, expected_state: str | None = None) -> type[BaseHTTPRequestHandler]:
+    """Callback handler. Records the redirect's query parameters in `result`.
+
+    The browser page never says "signed in": it is sent before the code exchange and
+    token check, so it only says whether the redirect itself looked right.
+    """
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            result.update({k: v[0] for k, v in qs.items()})
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
+            query = urllib.parse.urlparse(self.path).query
+            qs = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+            for k in ("error", "error_description"):
+                if k in qs:
+                    qs[k] = _printable(qs[k])
+            if "error" in qs:
+                result.update(qs)
+                self._reply(400, f"AgentLedger: sign-in failed ({qs['error']}). Return to the terminal.")
+            elif "code" not in qs:
+                self._reply(404, "AgentLedger: not the sign-in redirect.")  # favicon, probes: keep waiting
+            elif expected_state is not None and qs.get("state") != expected_state:
+                result.update(qs)
+                self._reply(400, "AgentLedger: sign-in failed (state mismatch). Return to the terminal.")
+            else:
+                result.update(qs)
+                self._reply(200, "AgentLedger: sign-in received. Return to the terminal to see the result.")
+
+        def _reply(self, status: int, text: str) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"AgentLedger: signed in. You can close this tab.")
+            self.wfile.write(text.encode())
 
         def log_message(self, *args: Any) -> None:
             pass
@@ -122,10 +169,10 @@ def authenticate(
     code_verifier, challenge = pkce_pair()
     state = secrets.token_urlsafe(16)
 
-    server = (server_cls or HTTPServer)((callback.hostname, callback.port), make_handler(result))
+    server = _listen(server_cls or CallbackServer, callback, make_handler(result, state), retry_hint)
     server.timeout = TIMEOUT_S  # handle_request() returns after this even if nothing arrives
     try:
-        threading_mod.Thread(target=lambda: _serve_once(server), daemon=True).start()
+        threading_mod.Thread(target=lambda: _serve_until_callback(server, result), daemon=True).start()
         code = _await_code(cfg, result, challenge, state, retry_hint,
                            threading_mod, monotonic or time.monotonic)
     finally:
@@ -134,11 +181,29 @@ def authenticate(
     return LoginResult(claims=_verify(cfg, tokens, verifier_cls or Verifier), tokens=tokens)
 
 
-def _serve_once(server: Any) -> None:
+def _listen(server_cls: Callable[..., Any], callback: urllib.parse.ParseResult, handler: type,
+            retry_hint: str) -> Any:
+    where = f"{callback.hostname}:{callback.port}"
     try:
-        server.handle_request()
-    except (OSError, ValueError):
-        pass  # main thread closed the socket (cancel or timeout); nothing to report
+        return server_cls((callback.hostname, callback.port), handler)
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE or getattr(e, "winerror", None) == 10048:
+            raise LoginError(f"Login failed: {where} is already in use (another agentledger login, or another "
+                             f"program, is listening there). Close it, then run {retry_hint} again.") from None
+        raise LoginError(f"Login failed: can't listen on {where} for the sign-in redirect "
+                         f"(OSError {e.errno}). On Windows, check that the port is not in an excluded range: "
+                         "netsh interface ipv4 show excludedportrange protocol=tcp") from None
+
+
+def _serve_until_callback(server: Any, result: dict) -> None:
+    # Serve more than one request: a favicon or probe arriving first must not use up the only slot.
+    for _ in range(MAX_CALLBACK_REQUESTS):
+        if "code" in result or "error" in result:
+            return
+        try:
+            server.handle_request()
+        except (OSError, ValueError):
+            return  # main thread closed the socket (cancel or timeout); nothing to report
 
 
 def _await_code(cfg, result, challenge, state, retry_hint, threading_mod, monotonic) -> str:
@@ -188,7 +253,11 @@ def _exchange(cfg: dict, code: str, code_verifier: str) -> dict:
 
 
 def _verify(cfg: dict, tokens: dict, verifier_cls: Any) -> dict:
+    verifier = verifier_cls.from_config()
     try:
-        return verifier_cls.from_config().verify_human(tokens["id_token"], cfg["cli"]["client_id"])
+        return verifier.verify_human(tokens["id_token"], cfg["cli"]["client_id"])
     except AuthError as e:
+        if jwks_unreachable(e):
+            raise LoginError(f"Login failed: {jwks_unreachable_text(verifier, e)} "
+                             "Check the network, then run agentledger login again.") from None
         raise LoginError(f"Login failed: ID token rejected ({e.reason}).") from None

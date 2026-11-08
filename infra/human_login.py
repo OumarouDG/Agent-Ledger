@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 import webbrowser  # noqa: F401  tests patch human_login.webbrowser.open
-from http.server import HTTPServer
 from pathlib import Path
 
 import requests  # noqa: F401  tests patch human_login.requests.post
@@ -22,6 +21,7 @@ for p in (ROOT, ROOT / "cli"):
         sys.path.insert(0, str(p))
 
 from agentledger import login  # noqa: E402
+from agentledger.login import CallbackServer as HTTPServer  # noqa: E402  (name kept: tests patch it)
 from controlplane.auth.config import load_config  # noqa: E402
 from controlplane.auth.jwt_verify import Verifier  # noqa: E402
 
