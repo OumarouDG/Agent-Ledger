@@ -14,6 +14,7 @@ cannot reach stops it with exit 2.
 from __future__ import annotations
 
 import re
+import statistics
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -48,7 +49,8 @@ _PATH_CHARS = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]{0,199}$")
 
 
 class RunStopped(Exception):
-    """The run stopped early. `exit_code` is 1 for a denial or failure, 2 for no gateway."""
+    """The run stopped early. `exit_code` is 1 for a denial or failure, 2 for no gateway.
+    `result` holds what the run did before it stopped (set by run_agents)."""
 
     def __init__(self, message: str, exit_code: int = 1, *, agent: str | None = None,
                  tool: str | None = None, reason: str | None = None):
@@ -57,6 +59,21 @@ class RunStopped(Exception):
         self.agent = agent
         self.tool = tool
         self.reason = reason
+        self.result: RunResult | None = None
+
+
+@dataclass(frozen=True)
+class CallTiming:
+    """Wall time of one gateway call as the runtime saw it: a new MCP session (initialize,
+    then the call) through the tunnel, plus whatever the tool itself waits on."""
+    agent: str
+    tool: str
+    ms: float
+    outcome: str  # "allowed" | "denied" | "failed" | "unavailable"
+
+
+# Called before each gateway call with (agent_id, tool, grant_id, what). May block (--step).
+BeforeCall = Callable[[str, str, str | None, str], None]
 
 
 class CoderOutputRejected(ValueError):
@@ -93,6 +110,7 @@ class RunResult:
     test: CiOutcome | None = None
     report: str = ""
     calls: list[str] = field(default_factory=list)
+    timings: list[CallTiming] = field(default_factory=list)
 
 
 # --- model output -------------------------------------------------------------------------
@@ -140,35 +158,81 @@ def parse_coder_reply(reply: dict) -> tuple[str, str]:
 class _Caller:
     """Runs one gateway call for an agent, prints a line for it, maps errors to RunStopped."""
 
-    def __init__(self, result: RunResult, out: Callable[[str], None] | None):
+    def __init__(self, result: RunResult, out: Callable[[str], None] | None,
+                 before_call: BeforeCall | None = None):
         self.result = result
         self.out = out
+        self.before_call = before_call
 
     def _say(self, line: str) -> None:
         self.result.calls.append(line)
         if self.out is not None:
             self.out(line)
 
+    def _timed(self, s: AgentSession, tool: str, started: float, outcome: str) -> str:
+        ms = (time.perf_counter() - started) * 1000
+        self.result.timings.append(CallTiming(s.agent_id, tool, ms, outcome))
+        return f"{ms:6.0f} ms"
+
     def __call__(self, s: AgentSession, tool: str, describe: Callable[[Any], str], **args):
+        if self.before_call is not None:
+            self.before_call(s.agent_id, tool, s.grant_id, describe_args(tool, args))
         head = f"  {s.agent_id:13} {tool:18} {s.grant_id or '(no grant)':22}"
+        started = time.perf_counter()
         try:
             value = s.call(tool, **args)
         except Denied as e:
-            self._say(f"{head} DENIED: {e.reason}")
+            self._say(f"{head} {self._timed(s, tool, started, 'denied')}  DENIED: {e.reason}")
             raise RunStopped(f"{s.agent_id} was denied {tool} on grant {s.grant_id}: {e.reason}",
                              1, agent=s.agent_id, tool=tool, reason=e.reason) from None
         except GatewayUnavailable as e:
-            self._say(f"{head} GATEWAY UNAVAILABLE")
+            self._say(f"{head} {self._timed(s, tool, started, 'unavailable')}  GATEWAY UNAVAILABLE")
             raise RunStopped(str(e), 2, agent=s.agent_id, tool=tool) from None
         except GatewayError as e:
-            self._say(f"{head} FAILED: {e}")
+            self._say(f"{head} {self._timed(s, tool, started, 'failed')}  FAILED: {e}")
             raise RunStopped(str(e), 1, agent=s.agent_id, tool=tool) from None
-        self._say(f"{head} allowed  {describe(value)}")
+        self._say(f"{head} {self._timed(s, tool, started, 'allowed')}  allowed  {describe(value)}")
         return value
 
     def fail(self, agent: str, what: str, why: str) -> RunStopped:
         self._say(f"  {agent:13} {what:18} {'':22} STOPPED: {why}")
         return RunStopped(f"{agent}: {why}", 1, agent=agent, tool=what)
+
+
+def describe_args(tool: str, args: dict) -> str:
+    """One line saying what a call will send. Prompts and file bodies are sized, not shown."""
+    if tool == "llm_converse":
+        chars = sum(len(str(m.get("content", ""))) for m in args.get("messages", []))
+        return f"ask the model ({chars} chars of prompt)"
+    if tool == "commit_file":
+        size = len(str(args.get("content", "")).encode("utf-8"))
+        return f"write {args.get('path')} ({size} bytes) on {args.get('branch')}"
+    if tool == "open_pull_request":
+        return f"open a PR from {args.get('branch')}: {args.get('title')}"
+    return ", ".join(f"{k}={v}" for k, v in args.items()) or "(no arguments)"
+
+
+def _percentile(sorted_ms: list[float], p: float) -> float:
+    """Nearest-rank percentile of an already sorted list."""
+    k = max(0, min(len(sorted_ms) - 1, int(round(p / 100 * len(sorted_ms) + 0.5)) - 1))
+    return sorted_ms[k]
+
+
+def latency_summary(timings: list[CallTiming]) -> list[str]:
+    """Lines for the end summary: all calls, then per tool. Numbers only, no adjectives."""
+    if not timings:
+        return ["latency: no gateway calls"]
+    ms = sorted(t.ms for t in timings)
+    lines = [f"latency: {len(ms)} calls, median {statistics.median(ms):.0f} ms, "
+             f"p95 {_percentile(ms, 95):.0f} ms, min {ms[0]:.0f} ms, max {ms[-1]:.0f} ms"]
+    by_tool: dict[str, list[float]] = {}
+    for t in timings:
+        by_tool.setdefault(t.tool, []).append(t.ms)
+    for tool, vals in by_tool.items():
+        vals.sort()
+        lines.append(f"  {tool:18} n={len(vals):<3} median {statistics.median(vals):6.0f} ms  "
+                     f"max {vals[-1]:6.0f} ms")
+    return lines
 
 
 def _open(open_agent, agent_id: str, grant_id: str, workflow_id: str) -> AgentSession:
@@ -288,19 +352,25 @@ def tester_report(result: RunResult, *, head_matches: bool) -> str:
 
 def run_agents(flow: Workflow, *, open_agent=_open_default, out: Callable[[str], None] | None = print,
                sleep: Callable[[float], None] = time.sleep, poll_interval_s: float = POLL_INTERVAL_S,
-               poll_timeout_s: float = POLL_TIMEOUT_S) -> RunResult:
-    """Lead, then Coder, then Tester. Raises RunStopped at the first denial or failure."""
+               poll_timeout_s: float = POLL_TIMEOUT_S,
+               before_call: BeforeCall | None = None) -> RunResult:
+    """Lead, then Coder, then Tester. Raises RunStopped at the first denial or failure; the
+    exception carries the partial result. `before_call` runs before every gateway call."""
     result = RunResult(flow.workflow_id, flow.run_id, flow.issue)
-    call = _Caller(result, out)
-    issue, plan = lead_step(flow, call)
-    result.issue_title, result.plan = issue.get("title") or "", plan
+    call = _Caller(result, out, before_call)
+    try:
+        issue, plan = lead_step(flow, call)
+        result.issue_title, result.plan = issue.get("title") or "", plan
 
-    coder = _open(open_agent, CODER, flow.coder.grant_id, flow.workflow_id)
-    coder_step(flow, coder, call, issue, plan, result)
+        coder = _open(open_agent, CODER, flow.coder.grant_id, flow.workflow_id)
+        coder_step(flow, coder, call, issue, plan, result)
 
-    tester = _open(open_agent, TESTER, flow.tester.grant_id, flow.workflow_id)
-    tester_step(flow, tester, call, result, sleep=sleep, interval_s=poll_interval_s,
-                timeout_s=poll_timeout_s)
+        tester = _open(open_agent, TESTER, flow.tester.grant_id, flow.workflow_id)
+        tester_step(flow, tester, call, result, sleep=sleep, interval_s=poll_interval_s,
+                    timeout_s=poll_timeout_s)
+    except RunStopped as e:
+        e.result = result
+        raise
     if out is not None:
         out(f"  {TESTER} report: {result.report}")
     return result
