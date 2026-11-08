@@ -16,7 +16,8 @@ from controlplane.auth.jwt_verify import Verifier, agent_client_ids
 from . import audit, github
 from .auth import AUTH_MODE, AgentTokenVerifier
 from .authorization import Decision, authorize
-from .grants import GrantStore, JsonFileGrantStore
+from .grants import GrantStore
+from .store_select import GrantStoreConfigError, build_grant_store
 
 HOST = "127.0.0.1"  # loopback only; reach it through a tunnel or reverse proxy
 PORT = 8000
@@ -41,8 +42,10 @@ def create_server(verifier: Verifier | None = None,
 
     mcp = FastMCP("AgentLedger Gateway", auth=auth)
     agents = dict(client_ids)
-    grants = grants or JsonFileGrantStore(
-        os.environ.get("AGENTLEDGER_GRANTS_FILE", "gateway-grants.json"))
+    try:
+        grants = grants or build_grant_store(os.environ)
+    except GrantStoreConfigError as e:  # no fallback to a different store
+        raise GatewayConfigError(str(e)) from e
     audit_path = audit_path or audit.default_path()
     github_app = github_app or github.from_env(os.environ)  # None = mock issues (dev only)
 
