@@ -1,0 +1,21 @@
+# Template. Install to /etc/systemd/system/agentledger-gateway.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl restart agentledger-gateway
+# Adjust paths to match the existing unit before replacing it.
+[Unit]
+Description=AgentLedger MCP gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ssm-user
+WorkingDirectory=/home/ssm-user/Agent-Ledger
+# Run as a module so `controlplane` and `gateway` import from the repo root.
+ExecStart=/home/ssm-user/Agent-Ledger/.venv/bin/python -m gateway.server
+Restart=on-failure
+RestartSec=5
+# The gateway binds 127.0.0.1:8000 itself. Reach it through a tunnel or reverse proxy.
+# No secrets here: auth uses the public JWKS plus shared/cognito.json.
+
+[Install]
+WantedBy=multi-user.target
