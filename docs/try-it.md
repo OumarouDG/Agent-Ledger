@@ -22,7 +22,7 @@ person -> signed token -> grant (what is allowed) -> gateway checks every call
 1. Get the code.
 
 ```bash
-git clone https://github.com/bt-scu/Agent-Ledger.git
+git clone https://github.com/OumarouDG/Agent-Ledger.git
 cd Agent-Ledger
 ```
 
