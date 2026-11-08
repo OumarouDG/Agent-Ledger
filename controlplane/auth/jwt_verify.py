@@ -29,6 +29,14 @@ class Verifier:
     leeway: int = 30
     _jwks: PyJWKClient | None = field(default=None, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        # Fail closed: PyJWT skips the issuer check entirely when issuer is None.
+        for name in ("issuer", "jwks_url"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.startswith("https://") or value != value.strip():
+                raise ValueError(f"Verifier needs an https {name}, got {value!r}. "
+                                 "Check shared/cognito.json or rerun `python infra/cognito_setup.py`.")
+
     @classmethod
     def from_config(cls) -> "Verifier":
         cfg = load_config()
