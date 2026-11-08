@@ -157,8 +157,10 @@ def test_default_model_is_the_first_one_in_the_grant(env):
     assert not r.is_error and r.data["text"] == "hello there"
     kw = env["fake"].calls[-1]
     assert kw["modelId"] == "allowed.model-v1:0" and kw["inferenceConfig"]["maxTokens"] == 200
-    e = last_audit(env)
-    assert e["decision"] == "allow" and e["resource"]["model"] == "allowed.model-v1:0"
+    lines = [json.loads(x) for x in env["afile"].read_text().splitlines()]
+    allow, usage = lines[-2], lines[-1]  # the decision, then the usage record after the call
+    assert allow["decision"] == "allow" and allow["resource"]["model"] == "allowed.model-v1:0"
+    assert usage["decision"] == "usage" and usage["resource"]["output_tokens"] == 2
 
 
 def test_second_listed_model_can_be_chosen(env):

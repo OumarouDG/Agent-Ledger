@@ -51,14 +51,25 @@ def _resource(e: dict) -> str:
     return " ".join(parts)
 
 
-def format_event(e: dict) -> str:
+def _when(e: dict) -> str:
     ts = e.get("ts")
-    when = (datetime.fromtimestamp(ts, timezone.utc).strftime("%H:%M:%S")
+    return (datetime.fromtimestamp(ts, timezone.utc).strftime("%H:%M:%S")
             if isinstance(ts, (int, float)) else "--:--:--")
-    verdict = "ALLOW" if e.get("decision") == "allow" else "DENY "
+
+
+def _format_usage(e: dict) -> str:
+    r = e.get("resource") or {}
+    return (f"{_when(e)}  USAGE  {e.get('agent_id') or '?':<12} {e.get('tool') or '?':<14} "
+            f"model={r.get('model')} tokens in={r.get('input_tokens')} out={r.get('output_tokens')}")
+
+def format_event(e: dict) -> str:
+    if e.get("decision") == "usage":
+        return _format_usage(e)
+    when = _when(e)
+    verdict = {"allow": "ALLOW", "lock": "LOCK "}.get(e.get("decision"), "DENY ")
     line = (f"{when}  {verdict}  {e.get('agent_id') or '?':<12} "
             f"{e.get('tool') or '?':<14} {_resource(e)}")
-    if e.get("decision") != "allow":
+    if e.get("decision") not in ("allow",):
         line += f"  <- {e.get('reason')}"
     who = [f"grant={e.get('grant_id')}", f"workflow={e.get('workflow_id')}"]
     if e.get("human_id"):
@@ -67,14 +78,22 @@ def format_event(e: dict) -> str:
 
 
 def summary(events: list[dict]) -> str:
-    allowed = sum(1 for e in events if e.get("decision") == "allow")
-    denied = len(events) - allowed
-    reasons = Counter(e.get("reason") for e in events if e.get("decision") != "allow")
-    out = f"{len(events)} events: {allowed} allowed, {denied} denied"
+    calls = [e for e in events if e.get("decision") in ("allow", "deny")]
+    allowed = sum(1 for e in calls if e.get("decision") == "allow")
+    denied = len(calls) - allowed
+    reasons = Counter(e.get("reason") for e in calls if e.get("decision") == "deny")
+    out = f"{len(calls)} calls: {allowed} allowed, {denied} denied"
     if reasons:
         out += " (" + ", ".join(f"{r} x{n}" for r, n in reasons.most_common()) + ")"
+    locks = sum(1 for e in events if e.get("decision") == "lock")
+    if locks:
+        out += f"; {locks} grant lock(s)"
+    usage = [e.get("resource") or {} for e in events if e.get("decision") == "usage"]
+    if usage:
+        tin = sum(u.get("input_tokens") or 0 for u in usage)
+        tout = sum(u.get("output_tokens") or 0 for u in usage)
+        out += f"; {len(usage)} model call(s), {tin} tokens in, {tout} out"
     return out
-
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -93,7 +112,7 @@ def main(argv=None) -> int:
         print(f"cannot read {args.path}: {type(e).__name__}", file=sys.stderr)
         return 2
 
-    shown = [e for e in events if not args.denied or e.get("decision") != "allow"]
+    shown = [e for e in events if not args.denied or e.get("decision") in ("deny", "lock")]
     if args.last:
         shown = shown[-args.last:]
     for e in shown:

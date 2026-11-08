@@ -24,3 +24,4 @@ cli/bin/
 gateway-grants.json
 gateway-audit.jsonl
 *.egg-info/
+gateway-quarantine.json
