@@ -71,6 +71,7 @@ These numbers come from one session on Nov 7 through the SSM tunnel. They are no
 - `cli/README.md`: login, grants, `run`, `probe`
 - `infra/README.md`: Cognito and DynamoDB setup
 - `docs/gateway.md`: the gateway, tools and audit
+- `docs/try-it.md`: run it yourself, no AWS needed
 - `docs/demo.md`: demo runbook
 - `docs/demo-timing.md`: five-minute plan
 - `docs/judge-qa.md`: likely questions
