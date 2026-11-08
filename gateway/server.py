@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
+from pathlib import Path
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.dependencies import get_access_token
+from fastmcp.server.dependencies import get_access_token, get_http_headers
 
 from controlplane.auth.jwt_verify import Verifier, agent_client_ids
 
+from . import audit
 from .auth import AUTH_MODE, AgentTokenVerifier
+from .authorization import authorize
+from .grants import GrantStore, JsonFileGrantStore
 
 HOST = "127.0.0.1"  # loopback only; reach it through a tunnel or reverse proxy
 PORT = 8000
@@ -22,7 +27,9 @@ class GatewayConfigError(RuntimeError):
 
 
 def create_server(verifier: Verifier | None = None,
-                  client_ids: Mapping[str, str] | None = None) -> FastMCP:
+                  client_ids: Mapping[str, str] | None = None,
+                  grants: GrantStore | None = None,
+                  audit_path: Path | None = None) -> FastMCP:
     """Build the gateway. Pass `verifier`/`client_ids` in tests; defaults load shared/cognito.json."""
     try:
         verifier = verifier or Verifier.from_config()
@@ -33,6 +40,38 @@ def create_server(verifier: Verifier | None = None,
 
     mcp = FastMCP("AgentLedger Gateway", auth=auth)
     agents = dict(client_ids)
+    grants = grants or JsonFileGrantStore(
+        os.environ.get("AGENTLEDGER_GRANTS_FILE", "gateway-grants.json"))
+    audit_path = audit_path or audit.default_path()
+
+    def guard(tool: str, resource: dict | None = None) -> None:
+        """Run the authorization pipeline for a protected tool. Raises ToolError on denial.
+
+        Every outcome, allowed or denied, is written to the audit trail."""
+        token = get_access_token()
+        agent_id = agents.get(token.client_id) if token else None
+        headers = get_http_headers()
+        grant_id = headers.get("x-grant-id")
+        workflow_id = headers.get("x-workflow-id")
+        decision = authorize(grants, agent_id=agent_id, grant_id=grant_id,
+                             workflow_id=workflow_id, tool=tool)
+        audit.record(
+            audit_path, agent_id=agent_id, grant_id=grant_id, workflow_id=workflow_id,
+            human_id=decision.grant.human_id if decision.grant else None,
+            tool=tool, resource=resource or {},
+            decision="allow" if decision.allowed else "deny", reason=decision.reason,
+        )
+        if not decision.allowed:
+            raise ToolError(f"denied: {decision.reason}")
+
+    @mcp.tool
+    def get_issue(issue_number: int) -> dict:
+        """Get a GitHub issue. Development mock: always returns issue #42; no GitHub call."""
+        guard("get_issue", {"issue": issue_number})
+        if issue_number != 42:
+            raise ToolError("issue not found")
+        return {"number": 42, "title": "Mock issue for gateway testing", "state": "open",
+                "mock": True}
 
     @mcp.tool
     def agentledger_ping() -> dict:

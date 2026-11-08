@@ -1,6 +1,6 @@
 # AgentLedger gateway
 
-FastMCP server at `http://127.0.0.1:8000/mcp`. Every request to `/mcp` needs a valid agent bearer token. There is no unauthenticated mode.
+FastMCP server at `http://127.0.0.1:8000/mcp`. Every request to `/mcp` needs a valid agent bearer token. There is no unauthenticated mode. Grant-protected tools also need a valid grant.
 
 ## Setup
 
@@ -35,35 +35,37 @@ Mint a token with the existing auth tooling, keep it in an environment variable,
 
 ## Kiro config
 
-Keep the token out of the file. Kiro expands `${VAR}` from your environment:
+Kiro expands `${VAR}` from your environment, so no token is stored in the file. Set these before launching Kiro:
 
-```json
-{
-  "mcpServers": {
-    "agentledger-local": {
-      "url": "http://127.0.0.1:8000/mcp",
-      "headers": { "Authorization": "Bearer ${AGENTLEDGER_TOKEN}" }
-    }
-  }
-}
-```
+- `AGENTLEDGER_TOKEN`: the agent access token (expires; refresh and reconnect)
+- `AGENTLEDGER_GRANT_ID` and `AGENTLEDGER_WORKFLOW_ID`: sent as `X-Grant-Id` and `X-Workflow-Id`
 
-For the EC2 tunnel, use the same `headers` block with the tunnel URL (for example `http://127.0.0.1:18000/mcp`). Set `AGENTLEDGER_TOKEN` before launching Kiro. Tokens expire, so refresh it and restart the MCP connection.
+`.kiro/settings/mcp.json` has `agentledger-local` (enabled) and `agentledger-ec2` (tunnel on port 18000, disabled until the EC2 tunnel is up).
 
 ## Tools
 
-- `agentledger_whoami`: the verified `agent_id`, `client_id`, `scopes` and `auth_mode`.
-- `agentledger_ping`: connectivity check, same `auth_mode`.
+- `agentledger_whoami`, `agentledger_ping`: need a valid agent token only.
+- `get_issue`: grant-protected. Development mock that returns issue #42 only; no GitHub call.
 
-`auth_mode` is `agent_token_verified_no_grants`: the agent identity is verified, nothing more.
+## Grant authorization
+
+A grant-protected tool runs this check, failing closed on any doubt: agent known, grant header present, workflow header present, grant exists, grant agent equals the token's agent, workflow matches, status `active`, not expired, every parent grant usable, tool listed in the grant's `tools` (`delegable_tools` never allows execution). Every allow and deny is appended to the audit file. A denied call returns `denied: <reason>`.
+
+**Stub:** there is no grant service yet. `JsonFileGrantStore` reads `AGENTLEDGER_GRANTS_FILE` (default `gateway-grants.json`) on every lookup, so a revoke applies to the next request. Replace it with Joshua's service behind `gateway.grants.GrantStore`. Audit goes to `AGENTLEDGER_AUDIT_FILE` (default `gateway-audit.jsonl`), a placeholder until the Ledger schema is agreed.
+
+Example grants file:
+
+```json
+{"grants": {"grant_001": {"agent_id": "agent_coder", "workflow_id": "wf_001", "human_id": "alice",
+  "status": "active", "expires_at": 4102444800, "tools": ["get_issue"]}}}
+```
 
 ## Limitations
 
-- No employee, workflow or grant identity. `whoami` does not report any.
-- No per-tool or per-agent authorization; any valid agent token can call every tool.
-- No revocation. A token stays valid until it expires.
+- Grants come from a local dev file, not an authoritative service.
+- No resource checks (repo/branch), no Sentinel rules, no real GitHub calls yet.
+- A token stays valid until it expires; revocation applies to grants, not tokens.
 - Plain HTTP on loopback. TLS and exposure are the job of the tunnel or proxy in front.
-
 ## Tests
 
 ```powershell

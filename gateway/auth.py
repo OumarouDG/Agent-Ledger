@@ -13,8 +13,8 @@ from controlplane.auth.jwt_verify import AuthError, Verifier
 log = logging.getLogger("agentledger.gateway.auth")
 
 REQUIRED_SCOPE = "agentledger/tools"
-# Identity is verified; grants/revocation are not enforced yet.
-AUTH_MODE = "agent_token_verified_no_grants"
+# Identity is verified for every call; grants are enforced only on grant-protected tools.
+AUTH_MODE = "agent_token_verified_grants_on_protected_tools"
 
 # Only these claims are kept on the AccessToken. The raw token is never stored.
 _KEPT_CLAIMS = ("iss", "sub", "client_id", "token_use", "scope", "iat", "exp")
