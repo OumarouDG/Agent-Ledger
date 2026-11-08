@@ -64,6 +64,32 @@ Do this last: it locks the grant, so the other steps stop working until you rele
 4. Release it in the SSM shell: `rm -f gateway-quarantine.json`. No restart needed.
 
 Point to make: the agent kept pushing against its limits, and the gateway cut it off by itself. Two refusals in a row are fine; an allowed call in between starts the count again.
+## Extended demo: from commit to accepted change
+
+Only run this once the GitHub App has **Actions: Read-only** and **Pull requests: Read and write** (see `docs/gateway.md`), and the EC2 grant lists the tools `get_test_result`, `open_pull_request` and `get_pull_request`. Keep the eight-step demo above as the fallback.
+
+The demo repo's test fails until `greeting.py` with `greet(name)` exists (issue #1).
+
+| # | Prompt to Kiro | Expect |
+|---|---|---|
+| A | `Call get_issue with issue_number 1`, then `Call create_branch with branch agentledger/wf_001/greet` | Issue and branch |
+| B | `Call commit_file on branch agentledger/wf_001/greet, path greeting.py, message "Add greet", content:` followed by a `greet(name)` that returns `Hello, <name>!` and raises `ValueError` for an empty name | A commit SHA |
+| C | Wait about 30 seconds, then `Call get_test_result with the commit sha from step B` | `found: true`, `passed: true`, a run id. If `found` is false, wait and ask again. |
+| D | `Call open_pull_request from branch agentledger/wf_001/greet with title "Add greet"` | A pull request number |
+| E | **You** open the pull request on GitHub and merge it | Human acceptance |
+| F | `Call get_pull_request with the number from step D` | `merged: true`, `merged_by` is you |
+
+Then show the whole chain in the SSM shell:
+
+```bash
+.venv/bin/python scripts/work_chain.py
+```
+
+It prints the issue, branch, commit, test run and pull request, and says `VALIDATED` only for a passing run on that exact commit, and `ACCEPTED` only for a merged pull request whose head commit passed. Anything missing says `PENDING`.
+
+To show a failing test, commit a wrong `greet` to a second branch and ask for its test result: `passed: false`, and the chain says `FAILED (failure)`.
+
+Reset: delete the demo branches (`gh api -X DELETE repos/OumarouDG/agentledger-demo/git/refs/heads/<branch>`). If the pull request was merged, `greeting.py` is now on `main` and the test passes; reset `main` before the next run or use a new issue.
 
 ## After the demo
 

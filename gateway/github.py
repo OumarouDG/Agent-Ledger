@@ -21,6 +21,9 @@ _TIMEOUT = 10
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
 _PATH = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 MAX_CONTENT_BYTES = 100_000
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+MAX_TITLE_CHARS = 200
+MAX_BODY_CHARS = 4_000
 
 
 class GitHubError(RuntimeError):
@@ -167,6 +170,81 @@ class GitHubApp:
         d = r.json()
         return {"repository": repo, "branch": branch, "path": path,
                 "commit_sha": d["commit"]["sha"], "url": d["commit"].get("html_url", "")}
+    def get_test_result(self, repo: str, sha: str, branch_prefix: str) -> dict:
+        """The latest workflow run for exactly this commit, only if it ran on a branch under
+        the prefix. GitHub reports it; the agent cannot influence it."""
+        if not _REPO.match(repo or ""):
+            raise GitHubError("invalid repository")
+        if not isinstance(sha, str) or not _SHA.match(sha):
+            raise GitHubError("sha must be a full 40-character commit id")
+        r = self._call("get", f"{API}/repos/{repo}/actions/runs",
+                       params={"head_sha": sha, "per_page": 10})
+        if r.status_code != 200:
+            raise GitHubError(f"github request failed: HTTP {r.status_code}")
+        runs = [x for x in r.json().get("workflow_runs", [])
+                if x.get("head_sha") == sha and isinstance(x.get("head_branch"), str)
+                and x["head_branch"].startswith(branch_prefix)]
+        if not runs:
+            return {"repository": repo, "sha": sha, "found": False, "status": "none",
+                    "conclusion": None, "passed": False}
+        run = max(runs, key=lambda x: (x.get("created_at") or "", x.get("run_attempt") or 0))
+        return {"repository": repo, "sha": sha, "found": True, "run_id": run["id"],
+                "run_attempt": run.get("run_attempt"), "workflow": run.get("name"),
+                "status": run.get("status"), "conclusion": run.get("conclusion"),
+                "passed": run.get("status") == "completed" and run.get("conclusion") == "success",
+                "branch": run.get("head_branch"), "url": run.get("html_url")}
+
+    def open_pull_request(self, repo: str, head: str, base: str, title: str, body: str) -> dict:
+        if not _REPO.match(repo or ""):
+            raise GitHubError("invalid repository")
+        if not valid_branch(head) or not valid_branch(base):
+            raise GitHubError("invalid branch name")
+        if not isinstance(title, str) or not title.strip() or len(title) > MAX_TITLE_CHARS:
+            raise GitHubError("invalid title")
+        if not isinstance(body, str) or len(body) > MAX_BODY_CHARS:
+            raise GitHubError("invalid body")
+        r = self._call("post", f"{API}/repos/{repo}/pulls",
+                       json={"title": title, "head": head, "base": base, "body": body})
+        if r.status_code == 422:
+            raise GitHubError("pull request not created (one may already exist, or there is nothing to merge)")
+        if r.status_code != 201:
+            raise GitHubError(f"github request failed: HTTP {r.status_code}")
+        d = r.json()
+        return {"repository": repo, "number": d["number"], "url": d["html_url"],
+                "head_branch": head, "head_sha": d["head"]["sha"], "base": base,
+                "state": d["state"], "merged": False}
+
+    def get_pull_request(self, repo: str, number: int, branch_prefix: str) -> dict:
+        """State of a pull request whose head branch is under the prefix: merged, by whom,
+        and which logins approved the current head commit."""
+        if not _REPO.match(repo or ""):
+            raise GitHubError("invalid repository")
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            raise GitHubError("invalid pull request number")
+        r = self._call("get", f"{API}/repos/{repo}/pulls/{number}")
+        if r.status_code in (403, 404):
+            raise GitHubError("pull request not found" if r.status_code == 404
+                              else "github request failed: HTTP 403")
+        if r.status_code != 200:
+            raise GitHubError(f"github request failed: HTTP {r.status_code}")
+        d = r.json()
+        head_ref = (d.get("head") or {}).get("ref") or ""
+        if not head_ref.startswith(branch_prefix):
+            raise GitHubError("pull request not found")
+        head_sha = d["head"]["sha"]
+        approvals = None
+        rv = self._call("get", f"{API}/repos/{repo}/pulls/{number}/reviews")
+        if rv.status_code == 200:
+            approvals = sorted({x["user"]["login"] for x in rv.json()
+                                if x.get("state") == "APPROVED" and x.get("commit_id") == head_sha
+                                and x.get("user")})
+        return {"repository": repo, "number": number, "title": d.get("title"),
+                "state": d.get("state"), "merged": bool(d.get("merged")),
+                "merged_by": (d.get("merged_by") or {}).get("login"),
+                "merge_commit_sha": d.get("merge_commit_sha") if d.get("merged") else None,
+                "head_branch": head_ref, "head_sha": head_sha,
+                "base": (d.get("base") or {}).get("ref"), "approved_by": approvals,
+                "url": d.get("html_url")}
 
 def secrets_manager_key(secret_id: str, region: str | None = None) -> Callable[[], str]:
     """Read the App private key from AWS Secrets Manager on each token refresh."""

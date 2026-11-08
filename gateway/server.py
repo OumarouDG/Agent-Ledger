@@ -97,7 +97,8 @@ def create_server(verifier: Verifier | None = None,
                 pass  # the lock is already in place; the denial itself was audited above
 
     def guard(tool: str, resource: dict | None = None, repo_required: bool = False,
-              branch: str | None = None, model: str | None = None) -> Authorized:
+              branch: str | None = None, model: str | None = None,
+              prefix_required: bool = False) -> Authorized:
         """Run the authorization pipeline for a protected tool. Raises ToolError on denial.
 
         Every decision, allowed or denied, is written to the audit trail before anything
@@ -117,6 +118,10 @@ def create_server(verifier: Verifier | None = None,
                 decision = Decision(False, "resource_not_in_grant", decision.grant)
             else:
                 resource["repository"] = repo
+        if decision.allowed and prefix_required:
+            prefix = decision.grant.resources.get("branch_prefix")
+            if not (isinstance(prefix, str) and prefix.endswith("/") and len(prefix) > 1):
+                decision = Decision(False, "resource_not_in_grant", decision.grant)
         if decision.allowed and branch is not None:
             prefix = decision.grant.resources.get("branch_prefix")
             ok = (isinstance(prefix, str) and prefix.endswith("/") and len(prefix) > 1
@@ -186,7 +191,7 @@ def create_server(verifier: Verifier | None = None,
             raise ToolError("internal error") from None
         _post(a, tool, started, decision=success_decision, status="succeeded",
               resource=resource_of(result), artifact=artifact_of(result),
-              source=source, evidence=evidence)
+              source=source, evidence=evidence(result) if callable(evidence) else evidence)
         return result
 
     def _identity_event(tool: str) -> None:
@@ -251,6 +256,55 @@ def create_server(verifier: Verifier | None = None,
                                    "branch": r.get("branch"), "path": r.get("path"),
                                    "sha": r.get("commit_sha")})
 
+    @mcp.tool
+    def get_test_result(sha: str) -> dict:
+        """Get the test run GitHub recorded for one exact commit (full 40-character sha) on a
+        branch under your grant's prefix. found is false when no run exists yet; try again."""
+        a = guard("get_test_result", {"sha": sha}, repo_required=True, prefix_required=True)
+        return _execute(
+            a, "get_test_result",
+            lambda: _need_github().get_test_result(
+                a.grant.resources["repository"], sha, a.grant.resources["branch_prefix"]),
+            source="github_api",
+            evidence=lambda r: "external" if r.get("found") else "none",
+            artifact_of=lambda r: ({"kind": "test_run", "repository": r["repository"],
+                                    "sha": r["sha"], "run_id": r["run_id"],
+                                    "status": r["status"], "conclusion": r["conclusion"],
+                                    "url": r["url"]} if r.get("found") else None))
+
+    @mcp.tool
+    def open_pull_request(branch: str, title: str, body: str = "") -> dict:
+        """Open a pull request from a branch under your grant's prefix into the grant's base
+        branch. A person still has to review and merge it."""
+        a = guard("open_pull_request", {}, repo_required=True, branch=branch)
+        return _execute(
+            a, "open_pull_request",
+            lambda: _need_github().open_pull_request(
+                a.grant.resources["repository"], branch,
+                a.grant.resources.get("base_branch", "main"), title, body),
+            source="github_api", evidence="external",
+            artifact_of=lambda r: {"kind": "pull_request", "repository": r["repository"],
+                                   "number": r["number"], "url": r["url"],
+                                   "head_branch": r["head_branch"], "sha": r["head_sha"],
+                                   "state": r["state"], "merged": False})
+
+    @mcp.tool
+    def get_pull_request(number: int) -> dict:
+        """Get the state of a pull request from a branch under your grant's prefix: open or
+        closed, merged or not, who merged it, and who approved the current commit."""
+        a = guard("get_pull_request", {"pull_request": number}, repo_required=True,
+                  prefix_required=True)
+        return _execute(
+            a, "get_pull_request",
+            lambda: _need_github().get_pull_request(
+                a.grant.resources["repository"], number, a.grant.resources["branch_prefix"]),
+            source="github_api", evidence="external",
+            artifact_of=lambda r: {"kind": "pull_request", "repository": r["repository"],
+                                   "number": r["number"], "url": r["url"],
+                                   "head_branch": r["head_branch"], "sha": r["head_sha"],
+                                   "state": r["state"], "merged": r["merged"],
+                                   "merged_by": r["merged_by"], "approved_by": r["approved_by"],
+                                   "merge_commit_sha": r["merge_commit_sha"]})
     @mcp.tool
     def llm_converse(messages: list[dict], model: str | None = None,
                      system: str | None = None) -> dict:
