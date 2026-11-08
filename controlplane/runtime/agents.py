@@ -107,6 +107,7 @@ class RunResult:
     pr_url: str = ""
     pr_state: str = ""
     pr_merged: bool = False
+    pr_head_sha: str = ""  # the PR's head when Tester read it; tests count only if it equals commit_sha
     test: CiOutcome | None = None
     report: str = ""
     calls: list[str] = field(default_factory=list)
@@ -339,6 +340,7 @@ def tester_step(flow: Workflow, tester: AgentSession, call: _Caller, result: Run
               number=result.pr_number)
     result.pr_state, result.pr_merged = pr.get("state") or "", bool(pr.get("merged"))
     head = pr.get("head_sha")
+    result.pr_head_sha = head if isinstance(head, str) else ""
     result.report = tester_report(result, head_matches=(head == sha))
 
 

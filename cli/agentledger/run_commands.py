@@ -109,6 +109,9 @@ def _verdict(result) -> tuple[str, int]:
     t = result.test
     if t is None:
         return "no test run", EXIT_TESTS
+    if t.passed and result.pr_head_sha != result.commit_sha:
+        return (f"PR head {(result.pr_head_sha or 'unknown')[:12]} is not the tested commit "
+                f"{result.commit_sha[:12]} (only that commit passed)"), EXIT_TESTS
     if t.passed:
         return f"passed ({t.run_url})", EXIT_PASSED
     if t.verdict == "failed":
@@ -163,19 +166,40 @@ def run(issue: int, repository: str, workflow_id: str | None, step: bool) -> Non
         click.echo(f"\n[step] to revoke mid-run, in another terminal: "
                    f"agentledger grant revoke {flow.root.grant_id}")
     click.echo(f"\n  {'AGENT':13} {'TOOL':18} {'GRANT':22} {'TIME':>9}  RESULT")
-    result, code, verdict = None, EXIT_FAILED, "not reached"
+    result, code, verdict, finished = None, EXIT_FAILED, "not reached", False
     try:
         result = agents.run_agents(flow, open_agent=open_agent, out=click.echo, sleep=_sleep,
                                    before_call=_step_hook(click.echo) if step else None)
         verdict, code = _verdict(result)
+        finished = True
     except agents.RunStopped as e:
         result, code = e.result, e.exit_code
         click.echo(f"\nRun stopped: {e}")
     except KeyboardInterrupt:
         click.echo("\nRun interrupted.")
+    finally:
+        # A finished run (tests passed or not) keeps its grants for review and the probe.
+        # Anything else (denial, no gateway, Ctrl+C, a crash) revokes the root, which the
+        # gateway applies to both children at their next call. A crash still propagates.
+        if not finished:
+            click.echo(_revoke_root(flow, store, human))
     for line in _summary(flow, result, verdict, code, grant_status_line(flow, store)):
         click.echo(line)
     raise SystemExit(code)
+
+
+def _revoke_root(flow, store, human) -> str:
+    from controlplane.grants.service import revoke_grant
+
+    gid = flow.root.grant_id
+    try:
+        r = revoke_grant(gid, store=store, human=human)
+    except Exception as e:  # noqa: BLE001 - say so; never claim it was revoked
+        return (f"WARNING: could not revoke root {gid} ({type(e).__name__}); "
+                f"revoke it now with: agentledger grant revoke {gid}")
+    if r.already_revoked:
+        return f"root {gid} was already revoked"
+    return f"revoked root {gid} because the run did not finish (its children are denied with it)"
 
 
 @click.command(help="Run agent_rogue against a live workflow. Every attack must be refused with "

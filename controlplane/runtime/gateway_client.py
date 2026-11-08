@@ -11,6 +11,7 @@ import asyncio
 import os
 from collections.abc import Callable, Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx2
 from fastmcp import Client
@@ -59,9 +60,33 @@ class IdentityMismatch(GatewayError):
     """The token's verified agent is not the agent this session was opened for."""
 
 
+class GatewayConfigError(GatewayError):
+    """The gateway URL would expose the token (plain http off this machine) or is malformed."""
+
+
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
 def gateway_url(env: Mapping[str, str] | None = None) -> str:
     env = os.environ if env is None else env
     return (env.get(GATEWAY_URL_ENV) or "").strip() or DEFAULT_GATEWAY_URL
+
+
+def check_gateway_url(url: str) -> str:
+    """https to any host, or plain http only to this machine (the SSM tunnel). Fail closed."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        host, parts = None, None
+    if parts is None or not host or parts.scheme not in ("http", "https"):
+        raise GatewayConfigError(f"gateway URL {url!r} is not an http(s) URL with a host; "
+                                 f"set {GATEWAY_URL_ENV} to e.g. {DEFAULT_GATEWAY_URL}")
+    if parts.scheme == "http" and host not in LOOPBACK_HOSTS:
+        raise GatewayConfigError(
+            f"refusing to send an agent token over plain http to {host}; use the SSM tunnel "
+            f"({DEFAULT_GATEWAY_URL}) or an https URL in {GATEWAY_URL_ENV}")
+    return url
 
 
 def _scrub(text: str, secret: str) -> str:
@@ -106,7 +131,7 @@ class AgentSession:
             raise ValueError("agent_id is required")
         self.grant_id = grant_id
         self.workflow_id = workflow_id
-        self.url = url or gateway_url()
+        self.url = check_gateway_url(url or gateway_url())  # before any token exists
         self._timeout_s = timeout_s
 
         token = mint(agent_id)
