@@ -10,14 +10,13 @@ The instance role (`kiro-rdp-UbuntuDesktopInstanceRole-azU1EzlqGW0w`) is already
 If it ever gets narrowed, attach `iam-policy.json` from this folder.
 
 ## 2. Install the agent (EC2)
+apt does not have the package on this Ubuntu (it said `Unable to locate package`). Use the direct download:
 ```
-sudo apt-get update && sudo apt-get install -y amazon-cloudwatch-agent
-```
-If apt cannot find it:
-```
+cd /tmp
 wget https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
 sudo dpkg -i amazon-cloudwatch-agent.deb
 ```
+Done once on Nov 8: status `running`, stream `i-02d94a2f0bf2a72db` in `/agentledger/gateway-audit`, dashboard `AgentLedger` created.
 
 ## 3. Start it with our config (EC2)
 ```
