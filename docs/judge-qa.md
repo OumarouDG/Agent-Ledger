@@ -61,6 +61,12 @@ It pauses before each call and prints what comes next. That gives time to revoke
 **What does `probe` show?**
 A rogue agent with its own small grant tries four attacks: another agent's grant id, no grant, delegating from Lead's grant, and a branch it may not write. Each is refused with its reason. With `--until-locked`, three violations in a row lock its grant.
 
+**What if the issue text tries to trick the model (prompt injection)?**
+It can change what the model writes, but not what the agent may do. The model's output is only ever sent as file content to `commit_file`. It is never run. The runtime refuses test files, CI files and hidden paths. The grant limits the branch, the repository, the tools and the model. The commit lands on a branch, and a person reviews the pull request before it is merged. We do not claim the model cannot be fooled. We claim a fooled model cannot go outside its grant.
+
+**Why does the Coder's file path get checked in the runtime and not the gateway?**
+Honest answer: the grant allows any path on the Coder's own branch. The runtime adds the test and hidden-path rule so a passing test means something. A different client holding Coder's token and grant could write those paths on its branch. It still could not touch `main`.
+
 **What is not built?**
 Be honest. Examples: grants are not stored with a signed history. The Sentinel lock is gateway-local. A live Console is not built if we only show the report or dashboard.
 
