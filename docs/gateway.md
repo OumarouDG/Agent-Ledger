@@ -79,6 +79,12 @@ Example grants file:
 
 Both need `resources.repository` and `resources.branch_prefix` in the grant. The prefix must end with `/` (for example `agentledger/wf_001/`). A branch that does not start with it, including `main`, is denied with `branch_not_permitted` before any GitHub call. Paths may not start with `/`, contain `..` or touch `.git`. The GitHub App's own permissions are the outer limit: it can write contents only on repos where it is installed.
 
+## Model calls
+
+- `llm_converse(messages, model=None, system=None)`: Bedrock Converse using the gateway's own AWS role. `messages` is a list of `{role: user|assistant, content: text}` that alternates, starts and ends with a user message (max 20 messages, 8000 characters each; `system` max 4000).
+
+The grant controls it: `tools` must include `llm_converse`, `resources.models` lists the model ids the agent may use (the first is the default; anything else is denied with `model_not_permitted` before Bedrock is called) and `resources.max_tokens` caps the reply (default 1024, never above 2000). The result has `text`, `stop_reason` and token counts. The model id is written to the audit trail; token counts are not yet. Use ids the account allows, for example `us.amazon.nova-lite-v1:0`.
+
 ## Audit
 
 If an audit event cannot be written, the call is denied (`audit_unavailable`).
