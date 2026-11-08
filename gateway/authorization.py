@@ -66,6 +66,8 @@ def authorize(store: GrantStore, *, agent_id: str | None, grant_id: str | None,
             parent_id = parent.parent_grant_id
     except GrantStoreError:
         return _deny("grant_store_unavailable")
+    except Exception:  # an adapter bug must still be a denial, and still get audited
+        return _deny("grant_store_unavailable")
 
     if tool not in grant.tools:
         return _deny("tool_not_permitted", grant)
