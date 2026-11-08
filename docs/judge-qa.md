@@ -38,6 +38,29 @@ DynamoDB, table `agentledger-grants`.
 **Is CloudWatch the ledger?**
 No. CloudWatch is a viewing copy. The audit file is the record.
 
+## Delegation
+
+**How does Lead delegate?**
+Lead holds a root grant from a human. It asks the grant service for a child grant for Coder and one for Tester. The child can only have tools that the root lists as delegable, the same repository, a branch prefix inside the parent's, and an expiry no later than the parent's.
+
+**Why can't Rogue delegate?**
+Only the agent that holds the parent grant may delegate from it. Rogue tries and gets `not_parent_holder`.
+
+**Where does the delegator's id come from?**
+From Lead's own verified token, not from anything the request says. An agent cannot claim to be Lead.
+
+**Can a child get more than its parent?**
+No. Asking for more is refused (`resource_escalation`, `tools_not_delegable`, `expiry_escalation`). A limit the child leaves out, such as `max_tokens` or `base_branch`, is copied from the parent, not set to a wider default.
+
+**What happens to the children when the root is revoked?**
+Their next call is denied: `parent_grant_revoked`. The gateway checks every ancestor on each call. The child record itself still says `active` in the table.
+
+**What does `--step` show?**
+It pauses before each call and prints what comes next. That gives time to revoke the root grant in a second terminal and see the next call denied.
+
+**What does `probe` show?**
+A rogue agent with its own small grant tries four attacks: another agent's grant id, no grant, delegating from Lead's grant, and a branch it may not write. Each is refused with its reason. With `--until-locked`, three violations in a row lock its grant.
+
 **What is not built?**
 Be honest. Examples: grants are not stored with a signed history. The Sentinel lock is gateway-local. A live Console is not built if we only show the report or dashboard.
 
