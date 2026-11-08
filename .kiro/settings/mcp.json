@@ -1,24 +1,28 @@
 ﻿{
-  "mcpServers": {
-    "agentledger-local": {
-      "url": "http://127.0.0.1:8000/mcp",
-      "headers": {
-        "Authorization": "Bearer ${AGENTLEDGER_TOKEN}",
-        "X-Grant-Id": "${AGENTLEDGER_GRANT_ID}",
-        "X-Workflow-Id": "${AGENTLEDGER_WORKFLOW_ID}"
-      },
-      "disabled": false,
-      "autoApprove": []
-    },
-    "agentledger-ec2": {
-      "url": "http://127.0.0.1:18000/mcp",
-      "headers": {
-        "Authorization": "Bearer ${AGENTLEDGER_TOKEN}",
-        "X-Grant-Id": "${AGENTLEDGER_GRANT_ID}",
-        "X-Workflow-Id": "${AGENTLEDGER_WORKFLOW_ID}"
-      },
-      "disabled": true,
-      "autoApprove": []
-    }
-  }
+    "mcpServers":  {
+                       "agentledger-local":  {
+                                                 "url":  "http://127.0.0.1:8000/mcp",
+                                                 "headers":  {
+                                                                 "Authorization":  "Bearer ${AGENTLEDGER_TOKEN}",
+                                                                 "X-Grant-Id":  "${AGENTLEDGER_GRANT_ID}",
+                                                                 "X-Workflow-Id":  "${AGENTLEDGER_WORKFLOW_ID}"
+                                                             },
+                                                 "disabled":  true,
+                                                 "autoApprove":  [
+
+                                                                 ]
+                                             },
+                       "agentledger-ec2":  {
+                                               "url":  "http://127.0.0.1:18000/mcp",
+                                               "headers":  {
+                                                               "Authorization":  "Bearer ${AGENTLEDGER_TOKEN}",
+                                                               "X-Grant-Id":  "${AGENTLEDGER_GRANT_ID}",
+                                                               "X-Workflow-Id":  "${AGENTLEDGER_WORKFLOW_ID}"
+                                                           },
+                                               "disabled":  false,
+                                               "autoApprove":  [
+
+                                                               ]
+                                           }
+                   }
 }
