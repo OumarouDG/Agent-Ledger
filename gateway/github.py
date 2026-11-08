@@ -6,6 +6,7 @@ return only the fields an agent needs; no token is ever returned or logged.
 
 from __future__ import annotations
 
+import base64
 import re
 import threading
 import time
@@ -17,11 +18,30 @@ import requests
 API = "https://api.github.com"
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _TIMEOUT = 10
+_BRANCH = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
+_PATH = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
+MAX_CONTENT_BYTES = 100_000
 
 
 class GitHubError(RuntimeError):
     """A GitHub call failed. The message is safe to show an agent (no secrets)."""
 
+
+def valid_branch(name) -> bool:
+    """A branch name safe to send to GitHub. Rejects traversal, odd endings and empty parts."""
+    if not isinstance(name, str) or not _BRANCH.match(name):
+        return False
+    parts = name.split("/")
+    return (all(p and p not in (".", "..") for p in parts)
+            and not name.endswith(".lock") and ".." not in name)
+
+
+def valid_path(path) -> bool:
+    """A repo-relative file path: no leading slash, no '..', nothing inside .git."""
+    if not isinstance(path, str) or not _PATH.match(path):
+        return False
+    parts = path.split("/")
+    return all(p and p not in (".", "..") and p.lower() != ".git" for p in parts)
 
 class GitHubApp:
     def __init__(self, app_id: str, installation_id: str, key_provider: Callable[[], str],
@@ -93,6 +113,60 @@ class GitHubApp:
             "url": d["html_url"],
         }
 
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self._installation_token()}",
+                "Accept": "application/vnd.github+json"}
+
+    def _call(self, method: str, url: str, **kw):
+        try:
+            return getattr(self._http, method)(url, headers=self._headers(), timeout=_TIMEOUT, **kw)
+        except GitHubError:
+            raise
+        except Exception as e:
+            raise GitHubError(f"github request failed: {type(e).__name__}") from e
+
+    def create_branch(self, repo: str, branch: str, base: str) -> dict:
+        if not _REPO.match(repo or ""):
+            raise GitHubError("invalid repository")
+        if not valid_branch(branch) or not valid_branch(base):
+            raise GitHubError("invalid branch name")
+        r = self._call("get", f"{API}/repos/{repo}/git/ref/heads/{base}")
+        if r.status_code != 200:
+            raise GitHubError("base branch not found")
+        sha = r.json()["object"]["sha"]
+        r = self._call("post", f"{API}/repos/{repo}/git/refs",
+                       json={"ref": f"refs/heads/{branch}", "sha": sha})
+        if r.status_code == 422:
+            raise GitHubError("branch already exists")
+        if r.status_code != 201:
+            raise GitHubError(f"github request failed: HTTP {r.status_code}")
+        return {"repository": repo, "branch": branch, "base": base, "sha": sha}
+
+    def commit_file(self, repo: str, branch: str, path: str, content: str, message: str) -> dict:
+        if not _REPO.match(repo or ""):
+            raise GitHubError("invalid repository")
+        if not valid_branch(branch):
+            raise GitHubError("invalid branch name")
+        if not valid_path(path):
+            raise GitHubError("invalid path")
+        if not isinstance(content, str) or len(content.encode("utf-8")) > MAX_CONTENT_BYTES:
+            raise GitHubError("content missing or too large")
+        if not isinstance(message, str) or not message.strip() or len(message) > 200:
+            raise GitHubError("invalid commit message")
+        url = f"{API}/repos/{repo}/contents/{path}"
+        existing = self._call("get", url, params={"ref": branch})
+        body = {"message": message, "branch": branch,
+                "content": base64.b64encode(content.encode("utf-8")).decode("ascii")}
+        if existing.status_code == 200:
+            body["sha"] = existing.json()["sha"]
+        elif existing.status_code != 404:
+            raise GitHubError(f"github request failed: HTTP {existing.status_code}")
+        r = self._call("put", url, json=body)
+        if r.status_code not in (200, 201):
+            raise GitHubError(f"github request failed: HTTP {r.status_code}")
+        d = r.json()
+        return {"repository": repo, "branch": branch, "path": path,
+                "commit_sha": d["commit"]["sha"], "url": d["commit"].get("html_url", "")}
 
 def secrets_manager_key(secret_id: str, region: str | None = None) -> Callable[[], str]:
     """Read the App private key from AWS Secrets Manager on each token refresh."""
