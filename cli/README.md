@@ -29,6 +29,26 @@ No command prints a token. Error messages name the cause and the fix, for exampl
 
 The browser page shown after sign-in never says "signed in". The page is sent before the code exchange and the token check, so it says `sign-in received` (or `sign-in failed (...)`). The terminal has the result.
 
+## Grant commands
+
+All four need a signed-in human (`agentledger login`). Signed out or expired, they print the session's message ("run agentledger login") and exit 1. `human_id` always comes from the verified session; there is no flag for it. Grants are written to DynamoDB table `agentledger-grants` (`AGENTLEDGER_GRANTS_TABLE` overrides).
+
+| Command | Does | Exit code |
+| --- | --- | --- |
+| `agentledger grant create --agent agent_coder --workflow wf_demo --tools get_issue --repo owner/name [--delegable t1,t2] [--ttl 60m]` | Root grant for the agent on your behalf. `--tools` and `--delegable` take comma-separated names, repeated, or both. `--ttl` is `30s`, `60m` or `2h` (default `60m`, at most 4 h). Prints the grant. | 0 created; 1 refused (`Refused: <reason>: ...`) or store error; 2 bad usage |
+| `agentledger grant revoke <grant_id>` | Sets `status=revoked`. The gateway denies it and its children at their next call. A second revoke says "already revoked". | 0 revoked or already revoked; 1 unknown ID, not permitted, store error |
+| `agentledger grant show <grant_id>` | One grant, from a strongly consistent read. | 0; 1 unknown ID, not permitted, store error |
+| `agentledger grant list [--workflow wf_demo]` | Your grants, sorted by expiry. | 0; 1 store error |
+
+Who may do what (`# GUESS:` values in `controlplane/grants/service.py`):
+
+- **Create:** humans in `engineer` or `security-admin`. `reviewer` is refused with `role_not_permitted`.
+- **Revoke, show, list:** your own grants. `security-admin` may revoke, show and list any grant.
+
+Refusal reasons: `unknown_agent`, `bad_repository`, `bad_expiry`, `no_tools`, `no_human`, `role_not_permitted`, `human_mismatch`, `bad_request`, `revoke_not_permitted`, `not_permitted`. Child grants (agent to agent) are created by the runtime, not the CLI.
+
+`grant list --workflow` reads a DynamoDB index that can lag a revoke by a moment, and says so. `grant show` is always current.
+
 ## For the agent runtime
 
 ```python
@@ -62,7 +82,7 @@ Only the ID token is verified here. The access token is returned as stored; the 
 ## Known limits
 
 - **Revoked tokens still verify locally until they expire.** `agentledger logout` revokes the refresh token, and Cognito then also revokes the access and ID tokens issued from it, but only for Cognito's own APIs. A JWT is checked by signature, issuer and expiry, so anything that verifies these tokens locally (including the gateway and `controlplane.auth.jwt_verify`) still accepts a human's access and ID tokens for up to 60 minutes after logout. Token lifetimes are not shortened to work around this.
-  Agent access is not meant to depend on token expiry. Agent access tokens are separate (one per agent app client, 12 hours) and logout does not touch them. By design, the gateway checks live grant state (`X-Grant-Id`) on every call, so revoking or quarantining a grant stops an agent at its next call while its token is still valid (see "Agent identity vs. sessions" in `infra/README.md`). The grant store and that check are in the gateway lane and are not part of this branch, so nothing in this branch tests them.
+  Agent access is not meant to depend on token expiry. Agent access tokens are separate (one per agent app client, 12 hours) and logout does not touch them; they can't be revoked early. The gateway checks live grant state (`X-Grant-Id`) on every call, so revoking a grant (`agentledger grant revoke`) stops an agent at its next call while its token is still valid. `tests/live/test_live_grants.py` checks this with `authorize()` called directly; it is not yet tested through the gateway.
 - **A 200 from `/oauth2/revoke` does not prove a live token was revoked.** Cognito also answers 200 for a token that is already revoked or invalid (AWS docs; checked by `test_second_revoke_of_same_token_still_returns_200`). `logout` therefore prints `revoke accepted by Cognito`, not `revoked`.
 - **`whoami` and `status` need the network** to fetch the pool's signing keys (JWKS) on every run (each command is a new process). Without it they say `can't reach the pool's signing keys ... Session not checked` and refuse the session. They do not report the token as bad.
 - **One sign-in per pool per OS user.** A second `agentledger login` replaces the stored session.
@@ -76,4 +96,4 @@ Only the ID token is verified here. The access token is returned as stored; the 
 | live | `pytest -q --live` | real `/oauth2/token` refresh and `/oauth2/revoke` with a throwaway user and app client, deleted afterwards (`tests/live/test_live_cli.py`) |
 | run | `agentledger whoami`, `status`, `logout`, `whoami` | after a manual `agentledger login` |
 
-Test files: `tests/unit/cli/` (`test_skeleton.py`, `test_storage.py`, `test_login_command.py`, `test_session.py`, `test_session_commands.py`, `test_silent_failures.py`) and `tests/live/test_live_cli.py`.
+Test files: `tests/unit/cli/` (`test_skeleton.py`, `test_storage.py`, `test_login_command.py`, `test_session.py`, `test_session_commands.py`, `test_silent_failures.py`) and `tests/live/test_live_cli.py`. Grant commands: `tests/unit/grants/test_grant_commands.py`.

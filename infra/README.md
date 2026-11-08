@@ -48,7 +48,36 @@ Setup prefers two things and falls back if it can't have them. Either fallback p
 - **Revocation works on the grant, not the token.** Agent tokens last 12 hours on purpose: the design is that revoking or quarantining a grant stops the agent at its next call while its token is still valid. Nothing in Cognito changes when a run starts, ends or is revoked.
 - **Humans are separate.** Humans sign in with PKCE and get an ID token with `cognito:groups`. `verify_agent` rejects human ID tokens (`wrong_token_use`) and human access tokens (`not_an_agent_token`, from the `username` claim that only human tokens carry).
 
-The grant store and the `X-Grant-Id` check live in the control plane, not in this folder, and are not part of this branch. Nothing here tests revocation.
+The grant store is in `controlplane/grants/` (see "Grants table" below). The `X-Grant-Id` check is the gateway's `authorize()`.
+
+## Grants table (DynamoDB)
+
+```powershell
+python infra/grants_setup.py      # create agentledger-grants; a second run prints "table exists"
+python infra/grants_teardown.py   # asks you to type 'delete'; deletes the table and every grant
+```
+
+| Setting | Value |
+| --- | --- |
+| Table | `agentledger-grants`, PK `grant_id` (S), on-demand billing |
+| Index | `workflow_id-index` on `workflow_id` (S), all attributes projected |
+| Region | from `shared/cognito.json` (`us-east-1`) |
+| Grant IDs | `gr_` + `secrets.token_urlsafe(12)` |
+| Tool lists | stored as DynamoDB lists (`L`), never sets: DynamoDB rejects empty sets |
+
+`DynamoGrantStore.get` uses `ConsistentRead=True` and keeps no cache. Any AWS error, network error or malformed item raises `GrantStoreError`, which the gateway turns into `grant_store_unavailable`; `None` means only that the grant does not exist. Creates use `attribute_not_exists(grant_id)`; revokes use `attribute_exists(grant_id)` so a mistyped ID is an error, not a new row.
+
+`store_from_env()`: `AGENTLEDGER_GRANT_STORE=dynamodb` gives the DynamoDB store (`AGENTLEDGER_GRANTS_TABLE` overrides the name); unset or `file` gives the dev JSON file store and logs a WARNING; anything else raises.
+
+### Grant known limits
+
+- **The service trusts the caller for identity.** `create_grant` takes `human` and `delegator_agent_id` as already verified. For child grants, the runtime must take the delegator's agent ID from `verify_agent` on that agent's token, never from the agent's own message. The CLI takes the human from `current_session()`.
+- **Revoke-to-deny measured 195 to 349 ms over 7 runs** (`tests/live/test_live_grants.py`), from a laptop to us-east-1, with `authorize()` called directly, not through the gateway. The time is the `revoke_grant` call plus one `authorize()`; the first `authorize()` after the revoke denied in every run. Not measured from EC2 or end to end through an MCP call.
+- **Revoked grants are never deleted.** The gateway's parent walk needs them. Each `pytest --live` run adds 6 revoked rows.
+- **`grant list --workflow` can lag a revoke.** It reads the GSI, and GSI reads can't be strongly consistent. `grant show` and the gateway use the consistent `GetItem`.
+- **Agent tokens can't be revoked, only grants.** An agent token stays valid for its 12 hours; revoking the grant is what stops the agent at its next gateway call.
+- **With `AGENTLEDGER_GRANT_STORE` unset the gateway reads the JSON file** and never sees a DynamoDB revoke. `store_from_env()` logs a WARNING in that case.
+- The EC2 instance role is far broader than the gateway needs. This is not least privilege.
 
 ## How to use it
 
