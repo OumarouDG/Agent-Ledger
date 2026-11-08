@@ -82,3 +82,35 @@ def test_denied_filter_keeps_locks_and_drops_usage(tmp_path, capsys):
     assert tl.main([path, "--denied"]) == 0
     out = capsys.readouterr().out
     assert "DENY" in out and "LOCK" in out and "USAGE" not in out and "ALLOW" not in out
+
+DONE = {**ALLOW, "event": "outcome", "decision": "outcome", "status": "succeeded",
+        "tool": "commit_file", "activity_id": "act_1", "elapsed_ms": 412,
+        "artifact": {"kind": "git_commit", "sha": "5b7d4cb862e5489f", "branch": "agentledger/wf_001/x",
+                     "path": "a.py", "repository": "o/r"}}
+FAIL = {**DONE, "status": "failed", "activity_id": "act_2", "error": "github request failed: HTTP 500"}
+FAIL.pop("artifact")
+
+
+def test_outcome_lines_show_the_sha_or_the_error():
+    d, f = tl.format_event(DONE), tl.format_event(FAIL)
+    assert "DONE" in d and "git_commit" in d and "sha=5b7d4cb862" in d and "412ms" in d
+    assert "FAIL" in f and "HTTP 500" in f
+
+
+def test_summary_counts_outcomes_by_activity_not_by_line():
+    s = tl.summary([ALLOW, DONE, {**DONE}, FAIL])  # the same activity twice counts once
+    assert "1 succeeded, 1 failed" in s
+
+
+def test_denied_filter_keeps_failed_outcomes_but_not_successful_ones(tmp_path, capsys):
+    path = write(tmp_path, ALLOW, DONE, FAIL)
+    assert tl.main([path, "--denied"]) == 0
+    out = capsys.readouterr().out
+    assert "FAIL" in out and "DONE" not in out
+
+
+def test_identity_event_without_a_grant_has_no_empty_parentheses():
+    ident = {"ts": 1794104927, "decision": "allow", "event": "identity", "agent_id": "agent_coder",
+             "tool": "agentledger_whoami", "grant_id": None, "workflow_id": None, "reason": "authenticated"}
+    out = tl.format_event(ident)
+    assert "whoami" in out and "grant=None" not in out and "(" not in out

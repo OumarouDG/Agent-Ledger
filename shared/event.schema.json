@@ -1,0 +1,35 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentLedger gateway audit event (one JSON object per line)",
+  "description": "Written by gateway/audit.py. Contract for CloudWatch queries, the Console and the Ledger. Fields not listed may be added; consumers must ignore unknown fields. Never contains tokens, keys, prompts or file contents.",
+  "type": "object",
+  "required": ["event_id", "ts", "event", "decision", "tool"],
+  "properties": {
+    "event_id": {"type": "string", "description": "Unique per line, evt_ + 16 hex characters."},
+    "ts": {"type": "integer", "description": "Gateway server time, Unix seconds (UTC)."},
+    "event": {"enum": ["decision", "outcome", "usage", "sentinel", "identity"],
+              "description": "decision = allow/deny before the call; outcome = what happened after; usage = a finished model call; sentinel = a grant lock; identity = ping/whoami."},
+    "activity_id": {"type": "string", "description": "act_ + 12 hex. Ties the decision line to its outcome or usage line. A retry gets a new id."},
+    "decision": {"enum": ["allow", "deny", "outcome", "usage", "lock"],
+                 "description": "Kept as the main filter field for log queries. For outcome and usage lines see status."},
+    "status": {"enum": ["succeeded", "failed"], "description": "Only on outcome and usage lines."},
+    "reason": {"type": "string", "description": "allowed, authenticated, completed, failed, or a denial reason such as branch_not_permitted, grant_revoked, grant_quarantined."},
+    "agent_id": {"type": ["string", "null"]},
+    "human_id": {"type": ["string", "null"], "description": "The grant's owner, not necessarily who made the call."},
+    "grant_id": {"type": ["string", "null"]},
+    "workflow_id": {"type": ["string", "null"]},
+    "tool": {"type": "string"},
+    "resource": {"type": "object", "description": "repository, branch, path, issue, model, input_tokens, output_tokens. Never file contents."},
+    "artifact": {"type": "object", "description": "Outcome lines only. kind is git_commit, git_branch or issue; includes repository, branch, path, sha or number."},
+    "source": {"enum": ["github_api", "bedrock", "mock"], "description": "Where the result came from."},
+    "evidence": {"enum": ["external", "none"], "description": "external = confirmed by a GitHub response. Absent on failures."},
+    "error": {"type": "string", "description": "Failed outcomes only. A safe short message or an exception type name, at most 200 characters."},
+    "elapsed_ms": {"type": "integer"}
+  },
+  "evidenceLevels": {
+    "verified": "signed identity, grant decision, or an operation observed by the gateway",
+    "external": "a GitHub commit, PR, review or test run confirmed by the GitHub API",
+    "reported": "an agent says it did something; nothing confirmed it",
+    "inferred": "computed from the lines above"
+  }
+}

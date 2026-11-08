@@ -148,7 +148,9 @@ def call(env, grant_id, number=1):
 
 
 def last_audit(env):
-    return json.loads(env["afile"].read_text().splitlines()[-1])
+    """The latest authorization decision (outcome lines come after it)."""
+    lines = [json.loads(x) for x in env["afile"].read_text().splitlines()]
+    return [e for e in lines if e.get("event") == "decision"][-1]
 
 
 def test_gateway_reads_repo_from_grant_not_from_agent(env):

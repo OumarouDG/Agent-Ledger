@@ -50,7 +50,9 @@ In the SSM shell:
 .venv/bin/python scripts/audit_timeline.py
 ```
 
-Useful options: `--denied` shows only refusals, `--last 5` the latest five.
+Read it like this: `ALLOW` or `DENY` is the gateway's decision, made before anything runs. `DONE` or `FAIL` on the next line is what actually happened, with the real commit SHA for commits (it matches GitHub). An `ALLOW` with no `DONE` after it means the action did not finish. `agentledger_whoami` and `agentledger_ping` also appear as `ALLOW` lines.
+
+Useful options: `--denied` shows only refusals and failed actions, `--last 5` the latest five.
 
 ### Optional: Sentinel lock (after step 8)
 

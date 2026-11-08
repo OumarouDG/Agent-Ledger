@@ -91,7 +91,13 @@ After `AGENTLEDGER_SENTINEL_THRESHOLD` denials in a row (default 3, `0` turns it
 
 ## Audit
 
-If an audit event cannot be written, the call is denied (`audit_unavailable`).
+Every protected call writes lines to `gateway-audit.jsonl` (`AGENTLEDGER_AUDIT_FILE`). The format is in `shared/event.schema.json`.
+
+- A **decision** line (allow or deny) is written before anything runs. If it cannot be written, the call is denied (`audit_unavailable`).
+- An allowed call then gets an **outcome** line with the same `activity_id`: `succeeded` with the artifact (commit SHA, branch, issue number) and `evidence: external`, or `failed` with a short safe error. An allowed call is not a successful call: check the outcome. Model calls write a **usage** line (tokens) instead of an outcome on success.
+- `agentledger_ping` and `agentledger_whoami` write an **identity** line.
+- A retry gets a new `activity_id`, so counts by activity do not double.
+- The post-call line is written after the action, so if that write fails the failure is only logged. Nothing is ever logged from request content: no prompts, no file contents, no tokens.
 
 ## Limitations
 

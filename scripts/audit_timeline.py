@@ -62,19 +62,45 @@ def _format_usage(e: dict) -> str:
     return (f"{_when(e)}  USAGE  {e.get('agent_id') or '?':<12} {e.get('tool') or '?':<14} "
             f"model={r.get('model')} tokens in={r.get('input_tokens')} out={r.get('output_tokens')}")
 
+def _format_outcome(e: dict) -> str:
+    ok = e.get("status") == "succeeded"
+    a = e.get("artifact") or {}
+    bits = []
+    if a.get("kind"):
+        bits.append(a["kind"])
+    if a.get("sha"):
+        bits.append(f"sha={str(a['sha'])[:10]}")
+    if a.get("branch") and a.get("kind") != "issue":
+        bits.append(f"branch={a['branch']}")
+    if a.get("number") is not None:
+        bits.append(f"#{a['number']}")
+    if e.get("error"):
+        bits.append(f"error={e['error']}")
+    if e.get("elapsed_ms") is not None:
+        bits.append(f"{e['elapsed_ms']}ms")
+    return (f"{_when(e)}  {'DONE ' if ok else 'FAIL '}  {e.get('agent_id') or '?':<12} "
+            f"{e.get('tool') or '?':<14} {' '.join(bits)}")
+
+
 def format_event(e: dict) -> str:
     if e.get("decision") == "usage":
         return _format_usage(e)
+    if e.get("decision") == "outcome":
+        return _format_outcome(e)
     when = _when(e)
     verdict = {"allow": "ALLOW", "lock": "LOCK "}.get(e.get("decision"), "DENY ")
     line = (f"{when}  {verdict}  {e.get('agent_id') or '?':<12} "
             f"{e.get('tool') or '?':<14} {_resource(e)}")
     if e.get("decision") not in ("allow",):
         line += f"  <- {e.get('reason')}"
-    who = [f"grant={e.get('grant_id')}", f"workflow={e.get('workflow_id')}"]
+    who = []
+    if e.get("grant_id"):
+        who += [f"grant={e.get('grant_id')}", f"workflow={e.get('workflow_id')}"]
+    if e.get("activity_id"):
+        who.append(f"act={e['activity_id']}")
     if e.get("human_id"):
         who.append(f"owner={e['human_id']}")
-    return line.rstrip() + "\n" + " " * 18 + "(" + ", ".join(who) + ")"
+    return line.rstrip() + ("\n" + " " * 18 + "(" + ", ".join(who) + ")" if who else "")
 
 
 def summary(events: list[dict]) -> str:
@@ -88,6 +114,11 @@ def summary(events: list[dict]) -> str:
     locks = sum(1 for e in events if e.get("decision") == "lock")
     if locks:
         out += f"; {locks} grant lock(s)"
+    outs = [e for e in events if e.get("decision") == "outcome"]
+    if outs:
+        done = len({e.get('activity_id') for e in outs if e.get('status') == 'succeeded'})
+        failed = len({e.get('activity_id') for e in outs if e.get('status') != 'succeeded'})
+        out += f"; {done} succeeded, {failed} failed"
     usage = [e.get("resource") or {} for e in events if e.get("decision") == "usage"]
     if usage:
         tin = sum(u.get("input_tokens") or 0 for u in usage)
@@ -112,7 +143,8 @@ def main(argv=None) -> int:
         print(f"cannot read {args.path}: {type(e).__name__}", file=sys.stderr)
         return 2
 
-    shown = [e for e in events if not args.denied or e.get("decision") in ("deny", "lock")]
+    shown = [e for e in events if not args.denied or e.get("decision") in ("deny", "lock")
+             or (e.get("decision") == "outcome" and e.get("status") != "succeeded")]
     if args.last:
         shown = shown[-args.last:]
     for e in shown:
