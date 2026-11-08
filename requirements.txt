@@ -3,3 +3,4 @@ pyjwt[crypto]>=2.8
 requests>=2.31
 pytest>=8
 click==8.5.1  # agentledger CLI commands (cli/); install the CLI with `pip install -e cli`
+keyring==25.7.0  # CLI tokens in Windows Credential Manager / macOS Keychain / Secret Service

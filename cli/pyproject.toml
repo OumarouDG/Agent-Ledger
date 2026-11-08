@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 # Install editable from the repo (`pip install -e cli`): login imports controlplane/ from the repo root.
 dependencies = [
     "click>=8.1",
+    "keyring>=25",
     "requests>=2.31",
     "pyjwt[crypto]>=2.8",
 ]

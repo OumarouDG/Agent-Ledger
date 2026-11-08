@@ -39,7 +39,7 @@ def test_python_dash_m_agentledger_runs():
     assert "Usage: agentledger" in res.stdout
 
 
-@pytest.mark.parametrize("name", COMMANDS)
+@pytest.mark.parametrize("name", ("whoami", "status", "logout"))
 def test_stub_fails_instead_of_looking_like_success(name):
     # A stub that exits 0 would read as "signed in" or "signed out" to a script.
     res = CliRunner().invoke(cli, [name])
