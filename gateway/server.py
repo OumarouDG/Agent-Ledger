@@ -46,7 +46,8 @@ def create_server(verifier: Verifier | None = None,
     audit_path = audit_path or audit.default_path()
     github_app = github_app or github.from_env(os.environ)  # None = mock issues (dev only)
 
-    def guard(tool: str, resource: dict | None = None, repo_required: bool = False):
+    def guard(tool: str, resource: dict | None = None, repo_required: bool = False,
+              branch: str | None = None):
         """Run the authorization pipeline for a protected tool. Raises ToolError on denial.
 
         Every outcome, allowed or denied, is written to the audit trail. If the event cannot be\n        written the call is denied."""
@@ -64,6 +65,14 @@ def create_server(verifier: Verifier | None = None,
                 decision = Decision(False, "resource_not_in_grant", decision.grant)
             else:
                 resource["repository"] = repo
+        if decision.allowed and branch is not None:
+            prefix = decision.grant.resources.get("branch_prefix")
+            ok = (isinstance(prefix, str) and prefix.endswith("/") and len(prefix) > 1
+                  and github.valid_branch(branch) and branch.startswith(prefix)
+                  and branch != prefix)
+            resource["branch"] = branch
+            if not ok:
+                decision = Decision(False, "branch_not_permitted", decision.grant)
         try:
             audit.record(
                 audit_path, agent_id=agent_id, grant_id=grant_id, workflow_id=workflow_id,
@@ -91,6 +100,32 @@ def create_server(verifier: Verifier | None = None,
         except github.GitHubError as e:
             raise ToolError(str(e)) from e
 
+    def _need_github() -> github.GitHubApp:
+        if github_app is None:
+            raise ToolError("github is not configured on this gateway")
+        return github_app
+
+    @mcp.tool
+    def create_branch(branch: str) -> dict:
+        """Create a branch in the repository named in your grant, from the grant's base branch.
+        The name must start with your grant's branch prefix. You cannot choose the repository."""
+        grant = guard("create_branch", {}, repo_required=True, branch=branch)
+        try:
+            return _need_github().create_branch(
+                grant.resources["repository"], branch, grant.resources.get("base_branch", "main"))
+        except github.GitHubError as e:
+            raise ToolError(str(e)) from e
+
+    @mcp.tool
+    def commit_file(branch: str, path: str, content: str, message: str) -> dict:
+        """Create or update one text file on a branch under your grant's branch prefix.
+        Cannot write to the base branch. Content is limited to 100 KB."""
+        grant = guard("commit_file", {"path": path}, repo_required=True, branch=branch)
+        try:
+            return _need_github().commit_file(
+                grant.resources["repository"], branch, path, content, message)
+        except github.GitHubError as e:
+            raise ToolError(str(e)) from e
     @mcp.tool
     def agentledger_ping() -> dict:
         """Check that Kiro can reach the AgentLedger gateway."""

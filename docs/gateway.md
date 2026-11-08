@@ -64,6 +64,17 @@ Example grants file:
   "status": "active", "expires_at": 4102444800, "tools": ["get_issue"]}}}
 ```
 
+## Write tools
+
+- `create_branch(branch)`: creates a branch from the grant's `resources.base_branch` (default `main`).
+- `commit_file(branch, path, content, message)`: creates or updates one text file (max 100 KB).
+
+Both need `resources.repository` and `resources.branch_prefix` in the grant. The prefix must end with `/` (for example `agentledger/wf_001/`). A branch that does not start with it, including `main`, is denied with `branch_not_permitted` before any GitHub call. Paths may not start with `/`, contain `..` or touch `.git`. The GitHub App's own permissions are the outer limit: it can write contents only on repos where it is installed.
+
+## Audit
+
+If an audit event cannot be written, the call is denied (`audit_unavailable`).
+
 ## Limitations
 
 - Grants come from a local dev file, not an authoritative service.

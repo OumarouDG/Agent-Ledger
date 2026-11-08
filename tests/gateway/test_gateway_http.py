@@ -161,7 +161,7 @@ def _call(base_url, token, tool=None):
 
 def test_valid_token_initializes_and_lists_tools(base_url):
     tools, _ = _call(base_url, make())
-    assert tools == {"agentledger_ping", "agentledger_whoami", "get_issue"}
+    assert tools == {"agentledger_ping", "agentledger_whoami", "get_issue", "create_branch", "commit_file"}
 
 
 def test_whoami_returns_verified_claims(base_url):
