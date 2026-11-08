@@ -56,7 +56,10 @@ def test_cycle_is_rejected_deterministically():
     assert trace_upstream(g, cid("a")).artifacts == [cid("b")]
     assert trace_upstream(g, cid("b")).artifacts == []  # the closing edge was refused
     assert [(r["from"], r["to"], r["reason"]) for r in g.rejected] == [(cid("b"), cid("a"), "cycle")]
-    assert g.to_dict() == world(("b", "a"), ("a", "b")).to_dict()  # same answer every time
+    events = [e for i, c in enumerate("ab") for e in accepted_workflow(f"wf_{c}", c, 10 + i)]
+    declared = [decl("b", "a"), decl("a", "b")]
+    first = build_graph(events, declared).to_dict()
+    assert first == build_graph(events, list(reversed(declared))).to_dict()  # input order is irrelevant
 
 
 def test_self_dependency_is_rejected():
