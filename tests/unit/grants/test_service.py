@@ -248,6 +248,16 @@ def test_child_tools_outside_parent_delegable_refused_not_trimmed(store, kw, nam
     assert store.writes == 1  # only the root; no trimmed child was written
 
 
+def test_bad_trimming_would_look_like_success(store):
+    # Silent failure pair, bad case: a create that trims instead of refusing "succeeds",
+    # and the caller only learns at call time that create_branch was never granted.
+    root = make_root(store)
+    trimmed = frozenset({"commit_file", "create_branch"}) & root.delegable_tools
+    child = make_child(store, root, tools=trimmed)
+    assert authz(store, child, "create_branch").reason == "tool_not_permitted"
+    # Guard: test_child_tools_outside_parent_delegable_refused_not_trimmed.
+
+
 def test_parent_tools_not_delegable_unless_listed(store):
     # get_issue is in the root's tools AND delegable_tools; a root with tools only cannot hand it on.
     root = make_root(store, delegable_tools=frozenset())

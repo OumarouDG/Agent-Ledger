@@ -19,7 +19,7 @@ import boto3
 import pytest
 
 from controlplane.auth.config import load_config
-from controlplane.grants.errors import GrantRefused
+from controlplane.grants.errors import GrantNotFound, GrantRefused
 from controlplane.grants.service import GrantRequest, create_grant, registered_agents, revoke_grant
 from controlplane.grants.store import TABLE_NAME, DynamoGrantStore
 from gateway.authorization import authorize
@@ -175,6 +175,15 @@ def test_child_from_non_holder_refused(store, ledger):
         ledger.child(root, delegator="agent_rogue")
     assert e.value.reason == "not_parent_holder"
     assert ledger.created == [root.grant_id]
+
+
+def test_revoke_unknown_id_errors_and_creates_no_row(store, ledger):
+    # DynamoDB UpdateItem upserts without a condition; a mistyped ID must not become a junk row.
+    ghost = f"gr_live_missing_{secrets.token_hex(6)}"
+    with pytest.raises(GrantNotFound):
+        ledger.revoke(ghost)
+    assert store.mark_revoked(ghost, revoked_at=int(time.time()), revoked_by=ledger.human.username) is False
+    assert store.get(ghost) is None
 
 
 def test_missing_table_is_store_unavailable_not_unknown_grant(ledger):

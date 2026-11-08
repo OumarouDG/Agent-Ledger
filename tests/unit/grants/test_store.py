@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from botocore.exceptions import EndpointConnectionError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from controlplane.grants.store import (
     TABLE_NAME, DynamoGrantStore, grant_to_item, item_to_grant, store_from_env,
@@ -234,6 +234,35 @@ def test_mark_revoked_throttled_is_store_error(stub):
         store.mark_revoked("gr_w1", revoked_at=7, revoked_by="alice")
 
 
+class UpsertClient:
+    """Models UpdateItem: without a condition it creates a missing item (an upsert)."""
+
+    def __init__(self):
+        self.items: dict[str, dict] = {}
+
+    def update_item(self, **kw):
+        gid = kw["Key"]["grant_id"]["S"]
+        if gid not in self.items and "attribute_exists(grant_id)" in kw.get("ConditionExpression", ""):
+            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "UpdateItem")
+        self.items.setdefault(gid, {"grant_id": {"S": gid}})["status"] = {"S": "revoked"}
+        return {}
+
+
+def test_bad_unconditional_revoke_of_unknown_id_creates_an_item_and_succeeds():
+    # Silent failure pair, bad case: a mistyped ID "revokes" fine and leaves a junk row.
+    client = UpsertClient()
+    client.update_item(TableName=TABLE, Key={"grant_id": {"S": "gr_typo"}},
+                       UpdateExpression="SET #s = :revoked", ExpressionAttributeNames={"#s": "status"},
+                       ExpressionAttributeValues={":revoked": {"S": "revoked"}})
+    assert "gr_typo" in client.items
+
+
+def test_guard_conditional_revoke_of_unknown_id_creates_nothing():
+    client = UpsertClient()
+    assert DynamoGrantStore(TABLE, client=client).mark_revoked("gr_typo", revoked_at=1, revoked_by="alice") is False
+    assert client.items == {}
+
+
 # --- list reads ---------------------------------------------------------------
 
 def test_by_workflow_queries_the_index_across_pages(stub):
@@ -300,6 +329,34 @@ def test_dynamodb_table_override(clean_env):
     clean_env.setenv("AGENTLEDGER_GRANT_STORE", "dynamodb")
     clean_env.setenv("AGENTLEDGER_GRANTS_TABLE", "other-table")
     assert store_from_env().table_name == "other-table"
+
+
+def test_bad_unset_env_gateway_ignores_dynamo_revoke(clean_env, tmp_path, stub):
+    # Silent failure pair, bad case: with AGENTLEDGER_GRANT_STORE unset the gateway reads the
+    # dev file. A grant revoked in DynamoDB is still active there, so calls keep being allowed.
+    from gateway.authorization import authorize
+    path = tmp_path / "grants.json"
+    path.write_text('{"grants": {"gr_test1": {"agent_id": "agent_coder", "workflow_id": "wf_test", '
+                    '"tools": ["get_issue"]}}}')
+    clean_env.setenv("AGENTLEDGER_GRANTS_FILE", str(path))
+    dynamo, stubber = stub
+    expect_get(stubber, "gr_test1", item(status={"S": "revoked"}))
+    args = dict(agent_id="agent_coder", grant_id="gr_test1", workflow_id="wf_test", tool="get_issue")
+    assert authorize(dynamo, **args).reason == "grant_revoked"
+    assert authorize(store_from_env(), **args).allowed
+
+
+def test_guard_unset_env_logs_warning_and_dynamo_logs_table(clean_env, caplog):
+    caplog.set_level("INFO", logger="agentledger.grants")
+    store_from_env()
+    warn = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warn and "AGENTLEDGER_GRANT_STORE=dynamodb" in warn[0].getMessage()
+    assert "NOT seen" in warn[0].getMessage()
+    caplog.clear()
+    clean_env.setenv("AGENTLEDGER_GRANT_STORE", "dynamodb")
+    store = store_from_env()
+    assert repr(store) == "DynamoGrantStore(table='agentledger-grants', region='us-east-1')"
+    assert [r.getMessage() for r in caplog.records] == [f"grant store: {store!r}"]
 
 
 @pytest.mark.parametrize("value", ["DynamoDB", "dynamo", "s3", "memory", " dynamodb"])

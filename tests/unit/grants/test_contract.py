@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from controlplane.grants.store import DynamoGrantStore
+from controlplane.grants.store import DynamoGrantStore, item_to_grant
 from gateway.authorization import authorize
+from gateway.grants import GrantStoreError
 from tests.unit.grants.stubs import NOW, PAST, TABLE, expect_get, item, stubbed_client
 
 
@@ -105,4 +106,60 @@ def test_store_error_on_parent_read_is_unavailable(stub):
 def test_malformed_item_is_unavailable(stub):
     store, stubber = stub
     expect_get(stubber, "gr_test1", item(tools={"S": "get_issue"}))
+    assert decide(store).reason == "grant_store_unavailable"
+
+
+# --- silent failure pairs (GR-5) ---------------------------------------------------
+# Each "bad" test runs a naive store and shows the failure looks like success; the
+# matching "guard" test runs the real store on the same input.
+
+class StaleClient:
+    """Models DynamoDB read consistency: an eventually consistent read may return the item
+    as it was before the last write; ConsistentRead=True returns the latest."""
+
+    def __init__(self, before: dict, after: dict):
+        self.before, self.after, self.calls = before, after, []
+
+    def get_item(self, **kw):
+        self.calls.append(kw)
+        return {"Item": self.after if kw.get("ConsistentRead") is True else self.before}
+
+
+class EventuallyConsistentStore(DynamoGrantStore):
+    def get(self, grant_id):
+        resp = self._client.get_item(TableName=self.table_name, Key={"grant_id": {"S": grant_id}})
+        return item_to_grant(resp["Item"], grant_id)
+
+
+def just_revoked() -> StaleClient:
+    return StaleClient(before=item(), after=item(status={"S": "revoked"}))
+
+
+def test_bad_eventually_consistent_read_lets_revoked_grant_through():
+    assert decide(EventuallyConsistentStore(TABLE, client=just_revoked())).allowed
+
+
+def test_guard_consistent_read_denies_just_revoked_grant():
+    client = just_revoked()
+    assert decide(DynamoGrantStore(TABLE, client=client)).reason == "grant_revoked"
+    assert client.calls and all(c["ConsistentRead"] is True for c in client.calls)
+
+
+class SwallowingStore(DynamoGrantStore):
+    def get(self, grant_id):
+        try:
+            return super().get(grant_id)
+        except GrantStoreError:
+            return None
+
+
+def test_bad_swallowed_store_error_looks_like_unknown_grant(stub):
+    store, stubber = stub
+    stubber.add_client_error("get_item", service_error_code="ResourceNotFoundException", http_status_code=400)
+    assert decide(SwallowingStore(TABLE, client=store._client)).reason == "unknown_grant"
+
+
+def test_guard_store_error_is_grant_store_unavailable(stub):
+    store, stubber = stub
+    stubber.add_client_error("get_item", service_error_code="ResourceNotFoundException", http_status_code=400)
     assert decide(store).reason == "grant_store_unavailable"

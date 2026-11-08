@@ -10,6 +10,7 @@ never creates one. Nothing here deletes a grant; the gateway's parent walk needs
 
 from __future__ import annotations
 
+import logging
 import os
 from decimal import Decimal
 from typing import Any
@@ -40,6 +41,7 @@ _FIXES = {
 
 _deserializer = TypeDeserializer()
 _serializer = TypeSerializer()
+log = logging.getLogger("agentledger.grants")
 
 
 def _region() -> str:
@@ -67,6 +69,10 @@ class DynamoGrantStore:
         self.table_name = table_name
         # Creating a client makes no network call.
         self._client = client or boto3.client("dynamodb", region_name=region or _region())
+
+    def __repr__(self) -> str:
+        region = getattr(getattr(self._client, "meta", None), "region_name", "?")
+        return f"DynamoGrantStore(table={self.table_name!r}, region={region!r})"
 
     def get(self, grant_id: str) -> Grant | None:
         if not isinstance(grant_id, str) or not grant_id:
@@ -238,10 +244,19 @@ def _resources(raw: dict, gid: str) -> dict[str, Any]:
 
 
 def store_from_env() -> GrantStore:
-    """`AGENTLEDGER_GRANT_STORE=dynamodb` gives DynamoGrantStore; unset or `file` gives the JSON file store."""
+    """`AGENTLEDGER_GRANT_STORE=dynamodb` gives DynamoGrantStore; unset or `file` gives the JSON file store.
+
+    Logs which store it picked. With the variable unset, a gateway reads the dev file and never
+    sees a revoke made with `agentledger grant revoke`, so that case logs a WARNING.
+    """
     kind = os.environ.get(ENV_STORE, "")
     if kind in ("", "file"):
-        return JsonFileGrantStore(os.environ.get(ENV_FILE, DEFAULT_FILE))
+        path = os.environ.get(ENV_FILE, DEFAULT_FILE)
+        log.warning("grant store: JSON file %s (dev only; revokes made in DynamoDB are NOT seen). "
+                    "Set %s=dynamodb for the real store.", path, ENV_STORE)
+        return JsonFileGrantStore(path)
     if kind == "dynamodb":
-        return DynamoGrantStore(os.environ.get(ENV_TABLE) or TABLE_NAME)
+        store = DynamoGrantStore(os.environ.get(ENV_TABLE) or TABLE_NAME)
+        log.info("grant store: %r", store)
+        return store
     raise ValueError(f"{ENV_STORE}={kind!r} is not supported: use 'dynamodb' or 'file' (or leave it unset)")
