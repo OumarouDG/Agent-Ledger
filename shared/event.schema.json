@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AgentLedger gateway audit event (one JSON object per line)",
   "description": "Written by gateway/audit.py. Contract for CloudWatch queries, the Console and the Ledger. Fields not listed may be added; consumers must ignore unknown fields. Never contains tokens, keys, prompts or file contents.",
@@ -20,7 +20,7 @@
     "workflow_id": {"type": ["string", "null"]},
     "tool": {"type": "string"},
     "resource": {"type": "object", "description": "repository, branch, path, issue, model, input_tokens, output_tokens. Never file contents."},
-    "artifact": {"type": "object", "description": "Outcome lines only. kind is git_commit, git_branch or issue; includes repository, branch, path, sha or number."},
+    "artifact": {"type": "object", "description": "Outcome lines only. kind is git_commit, git_branch, issue, test_run or pull_request. test_run has sha, run_id, status, conclusion, url. pull_request has number, sha (head), merged, merged_by, approved_by. conclusion and merged are what GitHub reported; a succeeded outcome only means the lookup worked."},
     "source": {"enum": ["github_api", "bedrock", "mock"], "description": "Where the result came from."},
     "evidence": {"enum": ["external", "none"], "description": "external = confirmed by a GitHub response. Absent on failures."},
     "error": {"type": "string", "description": "Failed outcomes only. A safe short message or an exception type name, at most 200 characters."},

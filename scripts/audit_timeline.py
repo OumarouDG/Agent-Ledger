@@ -74,6 +74,12 @@ def _format_outcome(e: dict) -> str:
         bits.append(f"branch={a['branch']}")
     if a.get("number") is not None:
         bits.append(f"#{a['number']}")
+    if a.get("conclusion") is not None or a.get("kind") == "test_run":
+        bits.append(f"conclusion={a.get('conclusion')}")
+    if a.get("merged") is not None and a.get("kind") == "pull_request":
+        bits.append(f"merged={a['merged']}" + (f" by {a['merged_by']}" if a.get("merged_by") else ""))
+    if a.get("approved_by"):
+        bits.append("approved_by=" + ",".join(a["approved_by"]))
     if e.get("error"):
         bits.append(f"error={e['error']}")
     if e.get("elapsed_ms") is not None:

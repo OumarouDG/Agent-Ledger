@@ -79,6 +79,17 @@ Example grants file:
 
 Both need `resources.repository` and `resources.branch_prefix` in the grant. The prefix must end with `/` (for example `agentledger/wf_001/`). A branch that does not start with it, including `main`, is denied with `branch_not_permitted` before any GitHub call. Paths may not start with `/`, contain `..` or touch `.git`. The GitHub App's own permissions are the outer limit: it can write contents only on repos where it is installed.
 
+## Test evidence and pull requests
+
+Needs these GitHub App permissions on the installation: **Actions: Read-only** and **Pull requests: Read and write** (the installation must accept the change). Without them these tools fail with `github request failed: HTTP 403`.
+
+- `get_test_result(sha)`: the latest GitHub Actions run for exactly that 40-character commit, only if it ran on a branch under the grant's prefix. Returns `found`, `status`, `conclusion`, `passed`, `run_id`, `url`. `found: false` means no run exists yet (try again); it is not a failure. The agent cannot influence the answer: it comes from GitHub. `passed` is true only for a completed run with conclusion `success`.
+- `open_pull_request(branch, title, body="")`: opens a pull request from a branch under the prefix into the grant's `base_branch` (default `main`). A person still has to review and merge it.
+- `get_pull_request(number)`: state of a pull request whose head branch is under the prefix: `merged`, `merged_by`, `approved_by` (logins who approved the current head commit; `null` if reviews could not be read), `merge_commit_sha`. This is how acceptance is recorded: a person merged it on GitHub, not the agent saying so.
+
+All three need `resources.repository` and `resources.branch_prefix` in the grant and the tool name in `tools`. Their audit outcome lines carry the artifact (`test_run` with `conclusion`, or `pull_request` with `merged`). A succeeded lookup of a failing test still shows `conclusion=failure`: never call a commit validated unless a passing run is linked to its SHA.
+
+The demo repo has `.github/workflows/test.yml`, which runs on pushes to `agentledger/**` branches and on pull requests, and `tests/test_greeting.py`, which fails until `greeting.py` with `greet(name)` exists (issue #1).
 ## Model calls
 
 - `llm_converse(messages, model=None, system=None)`: Bedrock Converse using the gateway's own AWS role. `messages` is a list of `{role: user|assistant, content: text}` that alternates, starts and ends with a user message (max 20 messages, 8000 characters each; `system` max 4000).
