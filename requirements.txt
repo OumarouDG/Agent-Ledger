@@ -1,0 +1,4 @@
+boto3>=1.43.126  # first version we verified has get_client_token
+pyjwt[crypto]>=2.8
+requests>=2.31
+pytest>=8
