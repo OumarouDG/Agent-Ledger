@@ -49,7 +49,7 @@ def create_server(verifier: Verifier | None = None,
     def guard(tool: str, resource: dict | None = None, repo_required: bool = False):
         """Run the authorization pipeline for a protected tool. Raises ToolError on denial.
 
-        Every outcome, allowed or denied, is written to the audit trail."""
+        Every outcome, allowed or denied, is written to the audit trail. If the event cannot be\n        written the call is denied."""
         token = get_access_token()
         agent_id = agents.get(token.client_id) if token else None
         headers = get_http_headers()
@@ -64,12 +64,15 @@ def create_server(verifier: Verifier | None = None,
                 decision = Decision(False, "resource_not_in_grant", decision.grant)
             else:
                 resource["repository"] = repo
-        audit.record(
-            audit_path, agent_id=agent_id, grant_id=grant_id, workflow_id=workflow_id,
-            human_id=decision.grant.human_id if decision.grant else None,
-            tool=tool, resource=resource,
-            decision="allow" if decision.allowed else "deny", reason=decision.reason,
-        )
+        try:
+            audit.record(
+                audit_path, agent_id=agent_id, grant_id=grant_id, workflow_id=workflow_id,
+                human_id=decision.grant.human_id if decision.grant else None,
+                tool=tool, resource=resource,
+                decision="allow" if decision.allowed else "deny", reason=decision.reason,
+            )
+        except audit.AuditError:  # fail closed: no record, no action
+            raise ToolError("denied: audit_unavailable") from None
         if not decision.allowed:
             raise ToolError(f"denied: {decision.reason}")
         return decision.grant
