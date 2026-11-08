@@ -38,6 +38,28 @@ def test_unvalidated_pr_chain_is_marked_incomplete_not_filled_in():
     assert ci["missing"] and ci["id"] is None
 
 
+def test_failed_ci_and_unmerged_pr_are_named_not_hidden():
+    """Found on the real audit: an open PR whose CI failed must not look merged or merely missing."""
+    g = build_graph([*commit_events("wf_a", "a"), *run_events("wf_a", "a", conclusion="failure"),
+                     *pr_events("wf_a", "a", 7, merged=False)])
+    chain = deliverable_chain(g, PR)
+    by = {l["link"]: l for l in chain["links"]}
+    assert by["passing CI, same sha"]["id"] is None
+    assert "failure" in by["passing CI, same sha"]["not_passing"]
+    assert by["merged pull request"]["id"] is None and by["merged pull request"]["missing"]
+    assert not chain["complete"] and chain["state"] == "PENDING"
+    from ledger.chain import render_chain
+    text = "\n".join(render_chain(chain))
+    assert "NOT PASSING" in text and "not merged" in text
+
+
+def test_open_pr_with_passing_ci_is_incomplete_until_merged():
+    g = build_graph([*commit_events("wf_a", "a"), *run_events("wf_a", "a"),
+                     *pr_events("wf_a", "a", 7, merged=False)])
+    chain = deliverable_chain(g, PR)
+    assert not chain["complete"] and chain["state"] == "PENDING"
+
+
 def test_report_labels_the_synthetic_sample(capsys):
     assert lr.main(["--synthetic"]) == 0
     out = capsys.readouterr().out

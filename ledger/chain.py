@@ -53,9 +53,18 @@ def deliverable_chain(g: ProvenanceGraph, pr_id: str) -> dict:
     links.append(_link("tool activity", act.id if act else None, tool=act.attrs.get("tool") if act else None))
     links.append(_link("commit", commit.id if commit else None, head,
                        sha=commit.attrs.get("sha") if commit else None))
-    links.append(_link("passing CI, same sha", val.to_id if val else None, val))
-    links.append(_link("merged pull request", pr_id if pr else None, acc,
-                       merged_by=pr.attrs.get("merged_by") if pr else None))
+    tested = _first_edge(g, commit.id, "TESTED_BY") if commit else None
+    ci = _link("passing CI, same sha", val.to_id if val else None, val)
+    if val is None and tested is not None:  # a run exists but did not pass: say so
+        run = g.nodes[tested.to_id].attrs
+        ci["not_passing"] = f"run {run.get('run_id')} is {run.get('status')}/{run.get('conclusion')}"
+    links.append(ci)
+    # Only a merge GitHub reported makes this link. An open or closed-unmerged PR is missing it.
+    merged = _link("merged pull request", pr_id if (pr and acc) else None, acc,
+                   merged_by=pr.attrs.get("merged_by") if pr else None)
+    if pr and not acc:
+        merged["pr_state"] = f"last seen {pr.attrs.get('state') or 'unknown'}, not merged"
+    links.append(merged)
     return {"pull_request": pr_id, "state": state.state, "reason": state.reason, "links": links,
             "complete": all(not l.get("missing") for l in links)}
 
@@ -64,6 +73,10 @@ def render_chain(chain: dict) -> list[str]:
     out = [f"  {chain['pull_request']}  {chain['state']}" + ("" if chain["complete"] else "  (chain incomplete)")]
     for l in chain["links"]:
         who = l["id"] if l["id"] else "MISSING"
+        if not l["id"] and l.get("not_passing"):
+            who = f"NOT PASSING ({l['not_passing']})"
+        elif not l["id"] and l.get("pr_state"):
+            who = f"MISSING ({l['pr_state']})"
         ev = f"  [{l['evidence_level']}, {l['source_event_id']}]" if l.get("evidence_level") else ""
         out.append(f"      {l['link']:28} {who}{ev}")
     return out
