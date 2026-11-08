@@ -158,7 +158,7 @@ def audit_events(env):
 def test_valid_grant_allows_and_is_audited(env):
     r = call_get_issue(env, "ok")
     assert not r.is_error and r.data["number"] == 42
-    e = audit_events(env)[-1]
+    e = [x for x in audit_events(env) if x.get("event") == "decision"][-1]
     assert (e["decision"], e["agent_id"], e["grant_id"], e["human_id"], e["tool"]) == \
         ("allow", "coder-agent", "ok", "alice", "get_issue")
 

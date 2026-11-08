@@ -11,6 +11,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,7 @@ def default_path() -> Path:
 
 
 def record(path: Path, **fields: Any) -> dict:
-    event = {"ts": int(time.time()), **fields}
+    event = {"event_id": "evt_" + uuid.uuid4().hex[:16], "ts": int(time.time()), **fields}
     try:
         with _lock, path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, sort_keys=True) + "\n")

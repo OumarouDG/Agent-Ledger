@@ -10,3 +10,4 @@ import tempfile
 os.environ["AGENTLEDGER_SENTINEL_FILE"] = os.path.join(
     tempfile.mkdtemp(prefix="al-sentinel-"), "quarantine.json")
 os.environ["AGENTLEDGER_SENTINEL_THRESHOLD"] = "0"
+os.environ["AGENTLEDGER_AUDIT_FILE"] = os.path.join(tempfile.mkdtemp(prefix="al-audit-"), "audit.jsonl")
